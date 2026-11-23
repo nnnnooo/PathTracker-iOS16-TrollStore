@@ -10,7 +10,9 @@ struct TodayView: View {
     @State private var showDatePicker = false
     @State private var showFullScreenMap = false
     @State private var showPauseMenu = false
+    @State private var showNewRecording = false
     @State private var editingStay: Stay?
+    @State private var editingChunk: TrackChunk?
 
     private var isToday: Bool { Calendar.current.isDateInToday(selectedDate) }
     private var dayChunks: [TrackChunk] { store.chunks(on: selectedDate) }
@@ -37,6 +39,14 @@ struct TodayView: View {
             .background(Color(.systemGroupedBackground))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .navigationBarLeading) {
+                    Button {
+                        showNewRecording = true
+                    } label: {
+                        Image(systemName: engine.activeTrip != nil ? "record.circle.fill" : "record.circle")
+                            .foregroundColor(engine.activeTrip != nil ? .red : .accentColor)
+                    }
+                }
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 1) {
                         Text(Formatters.dayTitle(selectedDate)).font(.headline)
@@ -87,8 +97,14 @@ struct TodayView: View {
                     }
                 }
             }
+            .sheet(isPresented: $showNewRecording) {
+                NewRecordingSheet()
+            }
             .sheet(item: $editingStay) { stay in
                 StayEditSheet(stay: stay)
+            }
+            .sheet(item: $editingChunk) { chunk in
+                MoveDetailSheet(chunk: chunk)
             }
         }
     }
@@ -158,7 +174,14 @@ struct TodayView: View {
                     Text(statusDetail).font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
-                if !engine.hasAlwaysPermission {
+                if engine.activeTrip != nil {
+                    Button("结束记录") {
+                        engine.endActiveRecording()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .controlSize(.small)
+                } else if !engine.hasAlwaysPermission {
                     Button("授予始终定位") {
                         if engine.authorization == .notDetermined {
                             engine.requestWhenInUse()
@@ -205,12 +228,16 @@ struct TodayView: View {
     }
 
     private var statusColor: Color {
+        if engine.activeTrip != nil { return .red }
         if !engine.hasAnyPermission { return .red }
         if !engine.isEnabled || engine.isPaused { return .gray }
         return engine.activity == .moving ? .green : .blue
     }
 
     private var statusHeadline: String {
+        if let active = engine.activeTrip {
+            return "正在高精度记录：\(active.title)"
+        }
         if engine.isPaused {
             if engine.isPausedIndefinitely { return "已暂停记录" }
             if let until = engine.pausedUntil { return "已暂停至 \(Formatters.timeHM(until))" }
@@ -222,6 +249,9 @@ struct TodayView: View {
     }
 
     private var statusDetail: String {
+        if engine.activeTrip != nil {
+            return "手动运动记录中（高精度 GPS）"
+        }
         if !engine.hasAlwaysPermission {
             return "需要「始终允许」定位权限才能在后台自动记录轨迹"
         }
@@ -300,7 +330,12 @@ struct TodayView: View {
                             }
                             .buttonStyle(.plain)
                         case .move(let chunk):
-                            moveRow(chunk)
+                            Button {
+                                editingChunk = chunk
+                            } label: {
+                                moveRow(chunk)
+                            }
+                            .buttonStyle(.plain)
                         }
                     }
                 }
@@ -344,6 +379,11 @@ struct TodayView: View {
                             .background(Color.orange.opacity(0.18), in: Capsule())
                             .foregroundColor(.orange)
                     }
+                    if store.isCoordinatePrivate(stay.coordinate) {
+                        Image(systemName: "eye.slash.fill")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
                 }
                 HStack(spacing: 6) {
                     Text(Formatters.duration(stay.duration))
@@ -354,6 +394,14 @@ struct TodayView: View {
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .lineLimit(1)
+
+                if let note = stay.note, !note.isEmpty {
+                    Text(note)
+                        .font(.caption)
+                        .foregroundColor(.primary.opacity(0.85))
+                        .lineLimit(2)
+                        .padding(.top, 2)
+                }
             }
             Spacer()
             Image(systemName: "chevron.right")
@@ -381,9 +429,81 @@ struct TodayView: View {
                 .foregroundColor(.secondary)
 
             Spacer()
+
+            Image(systemName: "chevron.right")
+                .font(.caption2)
+                .foregroundColor(.secondary.opacity(0.6))
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 4)
+        .padding(.vertical, 6)
+    }
+}
+
+private struct MoveDetailSheet: View {
+    @EnvironmentObject private var store: DataStore
+    @Environment(\.dismiss) private var dismiss
+
+    let chunk: TrackChunk
+    @State private var selectedMode: MovementMode
+    @State private var showDeleteConfirm = false
+
+    init(chunk: TrackChunk) {
+        self.chunk = chunk
+        _selectedMode = State(initialValue: chunk.mode)
+    }
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DayRouteMapView(chunks: [chunk], pendingPoints: [], stays: [], currentLocation: nil)
+                        .frame(height: 200)
+                        .listRowInsets(EdgeInsets())
+                }
+
+                Section("路段数据") {
+                    LabeledContent("起止时间", value: "\(Formatters.timeHM(chunk.startDate)) – \(Formatters.timeHM(chunk.endDate))")
+                    LabeledContent("距离", value: Formatters.distance(chunk.distance))
+                    LabeledContent("用时", value: Formatters.duration(chunk.duration))
+                    LabeledContent("平均速度", value: Formatters.speed(chunk.averageSpeed))
+                    LabeledContent("最高速度", value: Formatters.speed(max(chunk.maxSpeed, chunk.averageSpeed)))
+                }
+
+                Section("出行方式") {
+                    Picker("修改方式", selection: $selectedMode) {
+                        ForEach(MovementMode.allCases, id: \.self) { m in
+                            Label(m.title, systemImage: m.symbol).tag(m)
+                        }
+                    }
+                }
+
+                Section {
+                    Button("删除此段轨迹（清理 GPS 漂移）", role: .destructive) {
+                        showDeleteConfirm = true
+                    }
+                }
+            }
+            .navigationTitle("路线详情")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        store.updateChunkMode(id: chunk.id, mode: selectedMode)
+                        dismiss()
+                    }
+                }
+            }
+            .confirmationDialog("确定删除这段轨迹吗？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
+                Button("删除", role: .destructive) {
+                    store.deleteChunk(id: chunk.id)
+                    dismiss()
+                }
+                Button("取消", role: .cancel) {}
+            }
+        }
     }
 }
 
@@ -393,7 +513,9 @@ private struct StayEditSheet: View {
 
     let stay: Stay
     @State private var name: String
+    @State private var note: String
     @State private var selectedCategory: String
+    @State private var isPrivateZone: Bool
     @State private var showDeleteConfirm = false
 
     private let quickCategories: [(id: String, label: String)] = [
@@ -409,7 +531,9 @@ private struct StayEditSheet: View {
     init(stay: Stay) {
         self.stay = stay
         _name = State(initialValue: stay.customName ?? stay.placeName ?? "")
+        _note = State(initialValue: stay.note ?? "")
         _selectedCategory = State(initialValue: stay.categoryRaw ?? "auto")
+        _isPrivateZone = State(initialValue: false)
     }
 
     var body: some View {
@@ -422,6 +546,14 @@ private struct StayEditSheet: View {
                             Text(item.label).tag(item.id)
                         }
                     }
+                    TextField("写点备注或当时的心情…", text: $note, axis: .vertical)
+                        .lineLimit(2...4)
+                }
+
+                Section {
+                    Toggle("导出时隐藏此地周围 300 米", isOn: $isPrivateZone)
+                } footer: {
+                    Text("开启后导出 GPX 轨迹时会自动过滤该范围，你自己查看不受影响。")
                 }
 
                 Section("详情") {
@@ -444,6 +576,9 @@ private struct StayEditSheet: View {
             }
             .navigationTitle("停留详情")
             .navigationBarTitleDisplayMode(.inline)
+            .onAppear {
+                isPrivateZone = store.isCoordinatePrivate(stay.coordinate)
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
@@ -451,7 +586,14 @@ private struct StayEditSheet: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
                         let cat: String? = selectedCategory == "auto" ? nil : selectedCategory
-                        store.renameNearby(stay, to: name, categoryRaw: cat)
+                        store.renameNearby(stay, to: name, categoryRaw: cat, note: note)
+                        let existingZone = store.privacyZone(containing: stay.coordinate)
+                        if isPrivateZone && existingZone == nil {
+                            let zoneName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? stay.displayName
+                            store.upsertPrivacyZone(PrivacyZone(name: zoneName, latitude: stay.latitude, longitude: stay.longitude, radius: 300))
+                        } else if !isPrivateZone, let zone = existingZone {
+                            store.deletePrivacyZone(id: zone.id)
+                        }
                         dismiss()
                     }
                 }

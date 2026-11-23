@@ -14,15 +14,17 @@ struct TrackChunk: Identifiable, Hashable, Sendable {
     var minLongitude: Double
     var maxLongitude: Double
     var modeRaw: String
+    var tripID: UUID?
     var pointsData: Data
 
-    init(id: UUID = UUID(), points: [TrackPoint], mode: MovementMode) {
+    init(id: UUID = UUID(), points: [TrackPoint], mode: MovementMode, tripID: UUID? = nil) {
         self.id = id
         self.startDate = points.first?.timestamp ?? Date()
         self.endDate = points.last?.timestamp ?? Date()
         self.pointCount = points.count
         self.distance = TrackPoint.distance(of: points)
         self.modeRaw = mode.rawValue
+        self.tripID = tripID
         self.minLatitude = points.map(\.latitude).min() ?? 0
         self.maxLatitude = points.map(\.latitude).max() ?? 0
         self.minLongitude = points.map(\.longitude).min() ?? 0
@@ -41,6 +43,7 @@ struct TrackChunk: Identifiable, Hashable, Sendable {
         minLongitude: Double,
         maxLongitude: Double,
         modeRaw: String,
+        tripID: UUID? = nil,
         pointsData: Data
     ) {
         self.id = id
@@ -53,18 +56,15 @@ struct TrackChunk: Identifiable, Hashable, Sendable {
         self.minLongitude = minLongitude
         self.maxLongitude = maxLongitude
         self.modeRaw = modeRaw
+        self.tripID = tripID
         self.pointsData = pointsData
     }
 
     var mode: MovementMode { MovementMode(rawValue: modeRaw) ?? .unknown }
-
-    var points: [TrackPoint] {
-        TrackCodec.decode(pointsData)
-    }
-
-    var duration: TimeInterval {
-        max(0, endDate.timeIntervalSince(startDate))
-    }
+    var points: [TrackPoint] { TrackCodec.decode(pointsData) }
+    var duration: TimeInterval { max(0, endDate.timeIntervalSince(startDate)) }
+    var averageSpeed: Double { duration > 0 ? distance / duration : 0 }
+    var maxSpeed: Double { points.map(\.speed).max() ?? averageSpeed }
 }
 
 enum TagState: Int, Sendable {
@@ -150,6 +150,109 @@ struct Stay: Identifiable, Hashable, Sendable {
     }
 }
 
+enum ActivityType: String, CaseIterable, Identifiable, Sendable {
+    case hiking, walking, running, cycling
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .hiking: return "徒步"
+        case .walking: return "步行"
+        case .running: return "跑步"
+        case .cycling: return "骑行"
+        }
+    }
+
+    var emoji: String {
+        switch self {
+        case .hiking: return "🥾"
+        case .walking: return "🚶"
+        case .running: return "🏃"
+        case .cycling: return "🚴"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .hiking: return "figure.hiking"
+        case .walking: return "figure.walk"
+        case .running: return "figure.run"
+        case .cycling: return "bicycle"
+        }
+    }
+}
+
+struct Trip: Identifiable, Hashable, Sendable {
+    var id: UUID
+    var title: String
+    var startDate: Date
+    var endDate: Date?
+    var notes: String
+    var coverEmoji: String
+    var activityRaw: String?
+
+    init(
+        id: UUID = UUID(),
+        title: String,
+        startDate: Date = Date(),
+        endDate: Date? = nil,
+        notes: String = "",
+        coverEmoji: String = "🧭",
+        activityRaw: String? = nil
+    ) {
+        self.id = id
+        self.title = title
+        self.startDate = startDate
+        self.endDate = endDate
+        self.notes = notes
+        self.coverEmoji = coverEmoji
+        self.activityRaw = activityRaw
+    }
+
+    var isActive: Bool { endDate == nil }
+    var activity: ActivityType? { activityRaw.flatMap(ActivityType.init(rawValue:)) }
+    var isRecording: Bool { activityRaw != nil }
+    var duration: TimeInterval { max(0, (endDate ?? Date()).timeIntervalSince(startDate)) }
+
+    var dateRangeText: String {
+        let cal = Calendar.current
+        let end = max(startDate, (endDate ?? Date()).addingTimeInterval(-1))
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "zh_CN")
+        if cal.isDate(startDate, inSameDayAs: end) {
+            f.dateFormat = "yyyy年M月d日"
+            return f.string(from: startDate)
+        }
+        f.dateFormat = "yyyy年M月d日"
+        let s1 = f.string(from: startDate)
+        f.dateFormat = cal.isDate(startDate, equalTo: end, toGranularity: .year) ? "M月d日" : "yyyy年M月d日"
+        return "\(s1) – \(f.string(from: end))"
+    }
+}
+
+struct PrivacyZone: Identifiable, Hashable, Sendable {
+    var id: UUID
+    var name: String
+    var latitude: Double
+    var longitude: Double
+    var radius: Double
+
+    init(id: UUID = UUID(), name: String, latitude: Double, longitude: Double, radius: Double = 300) {
+        self.id = id
+        self.name = name
+        self.latitude = latitude
+        self.longitude = longitude
+        self.radius = radius
+    }
+
+    var location: CLLocation { CLLocation(latitude: latitude, longitude: longitude) }
+
+    func contains(_ coord: CLLocationCoordinate2D) -> Bool {
+        location.distance(from: CLLocation(latitude: coord.latitude, longitude: coord.longitude)) <= radius
+    }
+}
+
 enum MovementMode: String, CaseIterable, Sendable {
     case walking, running, cycling, automotive, subway, flying, unknown
 
@@ -189,9 +292,7 @@ enum MovementMode: String, CaseIterable, Sendable {
         }
     }
 
-    var color: Color {
-        Color(uiColor)
-    }
+    var color: Color { Color(uiColor) }
 }
 
 enum PlaceCategory: Equatable, Sendable {
@@ -335,6 +436,18 @@ enum Formatters {
             return String(format: "%.1f km", meters / 1000)
         }
         return "\(Int(meters.rounded())) m"
+    }
+
+    static func speed(_ metersPerSecond: Double) -> String {
+        String(format: "%.1f km/h", max(0, metersPerSecond) * 3.6)
+    }
+
+    static func pace(distance meters: Double, duration seconds: TimeInterval) -> String {
+        guard meters >= 50, seconds > 0 else { return "--'--\"" }
+        let secPerKm = seconds / (meters / 1000.0)
+        let mins = Int(secPerKm) / 60
+        let secs = Int(secPerKm) % 60
+        return String(format: "%d'%02d\"/km", mins, secs)
     }
 
     static func duration(_ seconds: TimeInterval) -> String {

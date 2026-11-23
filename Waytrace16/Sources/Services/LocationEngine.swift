@@ -47,10 +47,12 @@ final class LocationEngine: ObservableObject {
     @Published private(set) var pendingPoints: [TrackPoint] = []
     @Published private(set) var openStay: Stay?
     @Published private(set) var pausedUntil: Date?
+    @Published private(set) var activeTripID: UUID?
 
     @Published var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: Keys.enabled)
+            guard activeTripID == nil else { return }
             isEnabled ? start() : stop()
         }
     }
@@ -58,15 +60,20 @@ final class LocationEngine: ObservableObject {
     @Published var precision: Precision {
         didSet {
             UserDefaults.standard.set(precision.rawValue, forKey: Keys.precision)
-            if isRecording { restart() }
+            if activeTripID == nil, isRecording { restart() }
         }
     }
 
     var isPaused: Bool { pausedUntil.map { $0 > Date() } ?? false }
     var isPausedIndefinitely: Bool { pausedUntil == .distantFuture }
-    var isRecording: Bool { isEnabled && !isPaused }
+    var isRecording: Bool { (isEnabled && !isPaused) || activeTripID != nil }
     var hasAlwaysPermission: Bool { authorization == .authorizedAlways }
     var hasAnyPermission: Bool { authorization == .authorizedAlways || authorization == .authorizedWhenInUse }
+
+    var activeTrip: Trip? {
+        guard let id = activeTripID else { return nil }
+        return store.trips.first { $0.id == id && $0.endDate == nil }
+    }
 
     private let store: DataStore
     private let tagger: PlaceTagger
@@ -90,6 +97,7 @@ final class LocationEngine: ObservableObject {
         static let precision = "wt16.tracking.precision"
         static let pausedUntil = "wt16.tracking.pausedUntil"
         static let alwaysRequested = "wt16.location.alwaysRequested"
+        static let activeTripID = "wt16.tracking.activeTripID"
     }
 
     private enum Tuning {
@@ -121,6 +129,7 @@ final class LocationEngine: ObservableObject {
         self.authorization = manager.authorizationStatus
         self.isPreciseLocation = manager.accuracyAuthorization == .fullAccuracy
         self.isEnabled = UserDefaults.standard.bool(forKey: Keys.enabled)
+        self.activeTripID = UserDefaults.standard.string(forKey: Keys.activeTripID).flatMap(UUID.init)
         self.precision = Precision(rawValue: UserDefaults.standard.string(forKey: Keys.precision) ?? "") ?? .balanced
         let paused = UserDefaults.standard.object(forKey: Keys.pausedUntil) as? Date
         self.pausedUntil = paused.flatMap { $0 > Date() ? $0 : nil }
@@ -151,9 +160,56 @@ final class LocationEngine: ObservableObject {
         if isPaused { schedulePauseEnd() }
         pendingPoints = PendingTrackStore.load()
         restoreOpenStay()
+        validateActiveTrip()
 
         if isRecording { start() } else { releaseAllMonitoring() }
     }
+
+    // MARK: - Manual High-Precision Recording
+
+    @discardableResult
+    func beginRecording(activity: ActivityType, title: String) -> Trip {
+        flushChunk(carryOver: true)
+        let finalTitle = title.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+            ?? "\(activity.title) · \(Formatters.dayTitle(Date()))"
+        let trip = Trip(
+            title: finalTitle,
+            startDate: Date(),
+            endDate: nil,
+            notes: "",
+            coverEmoji: activity.emoji,
+            activityRaw: activity.rawValue
+        )
+        store.upsertTrip(trip)
+        activeTripID = trip.id
+        UserDefaults.standard.set(trip.id.uuidString, forKey: Keys.activeTripID)
+        start()
+        return trip
+    }
+
+    func endActiveRecording() {
+        guard var trip = activeTrip else {
+            activeTripID = nil
+            UserDefaults.standard.removeObject(forKey: Keys.activeTripID)
+            return
+        }
+        flushChunk(carryOver: true)
+        trip.endDate = Date()
+        store.upsertTrip(trip)
+        activeTripID = nil
+        UserDefaults.standard.removeObject(forKey: Keys.activeTripID)
+        if isRecording { restart() } else { stop() }
+    }
+
+    private func validateActiveTrip() {
+        guard let id = activeTripID else { return }
+        if !store.trips.contains(where: { $0.id == id && $0.endDate == nil }) {
+            activeTripID = nil
+            UserDefaults.standard.removeObject(forKey: Keys.activeTripID)
+        }
+    }
+
+    // MARK: - Permissions
 
     func requestWhenInUse() { manager.requestWhenInUseAuthorization() }
 
@@ -183,7 +239,7 @@ final class LocationEngine: ObservableObject {
         if !hasAnyPermission { activity = .unavailable }
     }
 
-    private var usesContinuousGPS: Bool { precision != .battery }
+    private var usesContinuousGPS: Bool { activeTripID != nil || precision != .battery }
 
     func start() {
         guard isRecording else { return }
@@ -204,10 +260,11 @@ final class LocationEngine: ObservableObject {
         }
 
         manager.stopMonitoringVisits()
-        manager.activityType = precision == .precise ? .fitness : .other
-        manager.desiredAccuracy = precision == .precise ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
-        manager.distanceFilter = precision == .precise ? 5 : 10
-        manager.pausesLocationUpdatesAutomatically = (precision != .precise)
+        let highPrecision = (activeTripID != nil || precision == .precise)
+        manager.activityType = highPrecision ? .fitness : .other
+        manager.desiredAccuracy = highPrecision ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = highPrecision ? 5 : 10
+        manager.pausesLocationUpdatesAutomatically = !highPrecision
         manager.startUpdatingLocation()
         isUpdatingGPS = true
 
@@ -249,6 +306,7 @@ final class LocationEngine: ObservableObject {
     func persistNow() { PendingTrackStore.save(pendingPoints) }
 
     func refreshState() {
+        validateActiveTrip()
         if pausedUntil != nil, !isPaused { resume() }
         if isRecording, activity == .off || isSettled { start() }
     }
@@ -258,6 +316,8 @@ final class LocationEngine: ObservableObject {
         anchor = nil
         lastAcceptedLocation = nil
         pendingPoints = []
+        activeTripID = nil
+        UserDefaults.standard.removeObject(forKey: Keys.activeTripID)
         PendingTrackStore.save([])
     }
 
@@ -265,7 +325,7 @@ final class LocationEngine: ObservableObject {
         let target = date ?? .distantFuture
         pausedUntil = target
         UserDefaults.standard.set(target, forKey: Keys.pausedUntil)
-        stop()
+        if activeTripID == nil { stop() }
         schedulePauseEnd()
         schedulePauseEndReminder(at: target)
     }
@@ -301,7 +361,7 @@ final class LocationEngine: ObservableObject {
     }
 
     private func handleSystemPause() {
-        guard isRecording, usesContinuousGPS else { return }
+        guard isRecording, usesContinuousGPS, activeTripID == nil else { return }
         activity = .stationary
         if let loc = lastAcceptedLocation { promoteAnchorIfStill(at: loc) }
         flushChunk(carryOver: true)
@@ -426,8 +486,9 @@ final class LocationEngine: ObservableObject {
         PendingTrackStore.save(pendingPoints)
         guard points.count >= 2, TrackPoint.distance(of: points) > 15 else { return }
 
+        let tripID = activeTripID
         let initialMode = MotionClassifier.mode(forSpeeds: points.map(\.speed))
-        let chunk = TrackChunk(points: points, mode: initialMode)
+        let chunk = TrackChunk(points: points, mode: initialMode, tripID: tripID)
         store.insertChunk(chunk)
 
         Task {
@@ -435,7 +496,7 @@ final class LocationEngine: ObservableObject {
             if legs.count > 1 {
                 store.deleteChunk(id: chunk.id)
                 for leg in legs where leg.points.count >= 2 {
-                    store.insertChunk(TrackChunk(points: leg.points, mode: leg.mode))
+                    store.insertChunk(TrackChunk(points: leg.points, mode: leg.mode, tripID: tripID))
                 }
             } else if let leg = legs.first, leg.mode != initialMode {
                 var updated = chunk
@@ -473,7 +534,7 @@ final class LocationEngine: ObservableObject {
                                      start: takeoff, end: min(landing, location.timestamp))
         flushChunk(carryOver: false)
         if let stay = openStay { close(stay, at: takeoff) }
-        store.insertChunk(TrackChunk(points: path, mode: .flying))
+        store.insertChunk(TrackChunk(points: path, mode: .flying, tripID: activeTripID))
         anchor = nil
         lastAcceptedLocation = nil
         pendingPoints = []
@@ -499,6 +560,7 @@ final class LocationEngine: ObservableObject {
 
         let drove = from.speed > Tuning.drivingSpeed
         let known = from.timestamp
+        let tripID = activeTripID
         flushChunk(carryOver: false)
         Task {
             let journey = await classifier.journey(from: earliest, to: location.timestamp)
@@ -517,7 +579,7 @@ final class LocationEngine: ObservableObject {
                 TrackPoint(latitude: location.coordinate.latitude, longitude: location.coordinate.longitude,
                            altitude: location.altitude, speed: speed, accuracy: 1000, timestamp: end),
             ]
-            store.insertChunk(TrackChunk(points: points, mode: mode))
+            store.insertChunk(TrackChunk(points: points, mode: mode, tripID: tripID))
         }
     }
 
@@ -613,7 +675,7 @@ final class LocationEngine: ObservableObject {
     }
 
     private func scheduleSettle() {
-        guard let stay = openStay, usesContinuousGPS, !isSettled else { return }
+        guard let stay = openStay, activeTripID == nil, usesContinuousGPS, !isSettled else { return }
         settleTask?.cancel()
         let wait = max(0, Tuning.settleAfter - Date().timeIntervalSince(stay.arrival))
         settleTask = Task { [weak self] in
@@ -627,7 +689,7 @@ final class LocationEngine: ObservableObject {
     }
 
     private func settle() {
-        guard let stay = openStay, isRecording, usesContinuousGPS, !isSettled else { return }
+        guard let stay = openStay, isRecording, activeTripID == nil, usesContinuousGPS, !isSettled else { return }
         isSettled = true
         stopContinuousGPS()
         flushChunk(carryOver: false)
