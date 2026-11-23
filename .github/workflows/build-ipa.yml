@@ -1,0 +1,65 @@
+name: Build iOS 16 IPA (TrollStore)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'Waytrace16/**'
+      - '.github/workflows/build-ipa.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: Waytrace16
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          xcodebuild -version
+          xcodebuild -showsdks
+
+      - name: Prepare App Icon from Upstream Assets
+        run: |
+          mkdir -p Resources/Assets.xcassets/AppIcon.appiconset
+          if [ -f ../RecordPath/Assets.xcassets/AppIcon.appiconset/AppIcon-light.png ]; then
+            cp ../RecordPath/Assets.xcassets/AppIcon.appiconset/AppIcon-light.png Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+          fi
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode Project
+        run: xcodegen generate
+
+      - name: Build Unsigned Release App (iOS 16.0+)
+        run: |
+          xcodebuild \
+            -project Waytrace16.xcodeproj \
+            -scheme Waytrace16 \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+      - name: Package IPA for TrollStore
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/Waytrace16.app Payload/
+          zip -qr Waytrace-iOS16-MVP.ipa Payload
+          ls -lh Waytrace-iOS16-MVP.ipa
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Waytrace-iOS16-MVP
+          path: Waytrace16/Waytrace-iOS16-MVP.ipa
+          retention-days: 30
