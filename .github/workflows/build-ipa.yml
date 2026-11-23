@@ -1,4 +1,4 @@
-name: Build iOS 16 IPA (TrollStore)
+name: Build iOS 16 TrollStore IPA
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
       - 'Waytrace16/**'
       - '.github/workflows/build-ipa.yml'
   workflow_dispatch:
+
+concurrency:
+  group: build-ios16-trollstore-ipa
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -54,12 +58,12 @@ jobs:
         run: |
           mkdir -p Payload
           cp -R build/Build/Products/Release-iphoneos/Waytrace16.app Payload/
-          zip -qr Waytrace-iOS16-MVP.ipa Payload
-          ls -lh Waytrace-iOS16-MVP.ipa
+          zip -qr Waytrace-iOS16-TrollStore.ipa Payload
+          ls -lh Waytrace-iOS16-TrollStore.ipa
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Waytrace-iOS16-MVP
-          path: Waytrace16/Waytrace-iOS16-MVP.ipa
+          name: Waytrace-iOS16-TrollStore
+          path: Waytrace16/Waytrace-iOS16-TrollStore.ipa
           retention-days: 30

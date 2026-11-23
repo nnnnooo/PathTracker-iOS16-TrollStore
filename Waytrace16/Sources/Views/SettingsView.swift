@@ -7,16 +7,14 @@ struct SettingsView: View {
     @EnvironmentObject private var engine: LocationEngine
     @EnvironmentObject private var tagger: PlaceTagger
 
+    private enum ImportKind { case gpx, backup }
+
     @State private var showClearConfirm = false
     @State private var exportedGPXURL: URL?
     @State private var backupSQLiteURL: URL?
-    @State private var showGPXImporter = false
-    @State private var showBackupRestorer = false
+    @State private var activeImportKind: ImportKind?
+    @State private var isImporterPresented = false
     @State private var alertMessage: String?
-
-    private var gpxContentType: UTType {
-        UTType(filenameExtension: "gpx") ?? .xml
-    }
 
     var body: some View {
         NavigationStack {
@@ -75,7 +73,8 @@ struct SettingsView: View {
                     }
 
                     Button("导入 GPX 轨迹文件") {
-                        showGPXImporter = true
+                        activeImportKind = .gpx
+                        isImporterPresented = true
                     }
 
                     if let url = exportedGPXURL {
@@ -105,7 +104,8 @@ struct SettingsView: View {
                     }
 
                     Button("从备份文件恢复数据库") {
-                        showBackupRestorer = true
+                        activeImportKind = .backup
+                        isImporterPresented = true
                     }
                 } header: {
                     Text("本地备份与恢复（替代 iCloud）")
@@ -118,36 +118,39 @@ struct SettingsView: View {
                         showClearConfirm = true
                     }
                 } footer: {
-                    Text("Waytrace iOS 16 · 完整版（全天定位 / 旅程 / 统计图表 / 护照印章 / 此生必去 / 旅行盲盒 / 签证夹 / 本地备份）。")
+                    Text("Waytrace iOS 16 · TrollStore 完整版（全天定位 / 旅程 / 统计图表 / 护照印章 / 此生必去 / 旅行盲盒 / 签证夹 / 本地备份）。")
                 }
             }
             .navigationTitle("设置")
-            .fileImporter(isPresented: $showGPXImporter, allowedContentTypes: [gpxContentType, .xml], allowsMultipleSelection: true) { result in
+            // Single unified .fileImporter to avoid the iOS 16 SwiftUI bug where multiple .fileImporter modifiers conflict
+            .fileImporter(
+                isPresented: $isImporterPresented,
+                allowedContentTypes: [.item],
+                allowsMultipleSelection: activeImportKind == .gpx
+            ) { result in
+                let kind = activeImportKind
+                activeImportKind = nil
                 switch result {
                 case .success(let urls):
-                    var chunksAdded = 0, staysAdded = 0, skipped = 0
-                    for url in urls {
-                        let s = GPXImporter.importFile(at: url, into: store)
-                        chunksAdded += s.addedChunks
-                        staysAdded += s.addedStays
-                        skipped += s.skippedDuplicates
-                    }
-                    tagger.enqueue()
-                    alertMessage = "导入完成：新增 \(chunksAdded) 段轨迹、\(staysAdded) 个地点（跳过重复 \(skipped) 项）。"
-                case .failure(let err):
-                    alertMessage = "导入失败：\(err.localizedDescription)"
-                }
-            }
-            .fileImporter(isPresented: $showBackupRestorer, allowedContentTypes: [.data, .item], allowsMultipleSelection: false) { result in
-                switch result {
-                case .success(let urls):
-                    if let first = urls.first, store.restoreBackup(from: first) {
-                        alertMessage = "数据库已恢复：共载入 \(store.chunks.count) 段轨迹、\(store.stays.count) 个地点、\(store.trips.count) 段旅程。"
-                    } else {
-                        alertMessage = "恢复失败，请确认选择的是有效的 Waytrace16-Backup.sqlite 文件。"
+                    if kind == .gpx {
+                        var chunksAdded = 0, staysAdded = 0, skipped = 0
+                        for url in urls {
+                            let s = GPXImporter.importFile(at: url, into: store)
+                            chunksAdded += s.addedChunks
+                            staysAdded += s.addedStays
+                            skipped += s.skippedDuplicates
+                        }
+                        tagger.enqueue()
+                        alertMessage = "导入完成：新增 \(chunksAdded) 段轨迹、\(staysAdded) 个地点（跳过重复 \(skipped) 项）。"
+                    } else if kind == .backup {
+                        if let first = urls.first, store.restoreBackup(from: first) {
+                            alertMessage = "数据库已恢复：共载入 \(store.chunks.count) 段轨迹、\(store.stays.count) 个地点、\(store.trips.count) 段旅程。"
+                        } else {
+                            alertMessage = "恢复失败，请确认选择的是有效的 Waytrace16-Backup.sqlite 文件。"
+                        }
                     }
                 case .failure(let err):
-                    alertMessage = "恢复失败：\(err.localizedDescription)"
+                    alertMessage = "操作失败：\(err.localizedDescription)"
                 }
             }
             .alert("提示", isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })) {

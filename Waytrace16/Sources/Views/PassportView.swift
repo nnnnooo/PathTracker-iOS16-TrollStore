@@ -7,43 +7,63 @@ struct PassportView: View {
     @AppStorage("wt16.passport.theme") private var themeRaw: String = PassportTheme.burgundy.rawValue
     @State private var selectedSection = 0 // 0=出入境章, 1=省份印, 2=城市章, 3=四至与套章
     @State private var stampedID: String?
+    @State private var summary: PassportSummary?
 
     private var theme: PassportTheme { PassportTheme(rawValue: themeRaw) ?? .burgundy }
-    private var summary: PassportSummary { PassportEngine.build(stays: store.stays, chunks: store.chunks) }
 
     var body: some View {
-        ScrollView {
-            VStack(spacing: 18) {
-                passportCover
-                themePicker
-                Picker("印章分类", selection: $selectedSection) {
-                    Text("出入境 (\(summary.countryStamps.count))").tag(0)
-                    Text("省份印 (\(summary.provinceSeals.filter(\.visited).count)/34)").tag(1)
-                    Text("城市章 (\(summary.cityStamps.count))").tag(2)
-                    Text("四至·套章").tag(3)
-                }
-                .pickerStyle(.segmented)
+        Group {
+            if let summary {
+                ScrollView {
+                    VStack(spacing: 18) {
+                        passportCover(summary)
+                        themePicker
+                        Picker("印章分类", selection: $selectedSection) {
+                            Text("出入境 (\(summary.countryStamps.count))").tag(0)
+                            Text("省份印 (\(summary.provinceSeals.filter(\.visited).count)/34)").tag(1)
+                            Text("城市章 (\(summary.cityStamps.count))").tag(2)
+                            Text("四至·套章").tag(3)
+                        }
+                        .pickerStyle(.segmented)
 
-                Group {
-                    switch selectedSection {
-                    case 0: countryStampsSection
-                    case 1: provinceSealsSection
-                    case 2: cityStampsSection
-                    default: extremesAndSetsSection
+                        Group {
+                            switch selectedSection {
+                            case 0: countryStampsSection(summary)
+                            case 1: provinceSealsSection(summary)
+                            case 2: cityStampsSection(summary)
+                            default: extremesAndSetsSection(summary)
+                            }
+                        }
                     }
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 28)
                 }
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView()
+                    Text("正在整理护照与印章…")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, 28)
         }
         .background(Color(.systemGroupedBackground))
         .navigationTitle("漫迹护照")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: "\(store.stays.count)-\(store.chunks.count)") {
+            let staysSnapshot = store.stays
+            let chunksSnapshot = store.chunks
+            let computed = await Task.detached(priority: .userInitiated) {
+                PassportEngine.build(stays: staysSnapshot, chunks: chunksSnapshot)
+            }.value
+            summary = computed
+        }
     }
 
     // MARK: - Cover & Theme Picker
 
-    private var passportCover: some View {
+    private func passportCover(_ summary: PassportSummary) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .fill(theme.coverColor)
@@ -120,7 +140,7 @@ struct PassportView: View {
 
     // MARK: - 1. Country Entry/Exit Stamps
 
-    private var countryStampsSection: some View {
+    private func countryStampsSection(_ summary: PassportSummary) -> some View {
         VStack(spacing: 12) {
             if summary.countryStamps.isEmpty {
                 emptyPage(text: "还没有境外国家/地区的出入境记录，去过常住地以外的国家或从相册导入后将自动盖章。")
@@ -177,7 +197,7 @@ struct PassportView: View {
 
     // MARK: - 2. China 34 Province Vermilion Seals
 
-    private var provinceSealsSection: some View {
+    private func provinceSealsSection(_ summary: PassportSummary) -> some View {
         let visitedCount = summary.provinceSeals.filter(\.visited).count
         let vermilion = Color(red: 0.74, green: 0.15, blue: 0.14)
 
@@ -222,7 +242,7 @@ struct PassportView: View {
 
     // MARK: - 3. City Commemorative Stamps
 
-    private var cityStampsSection: some View {
+    private func cityStampsSection(_ summary: PassportSummary) -> some View {
         VStack(spacing: 12) {
             if summary.cityStamps.isEmpty {
                 emptyPage(text: "还没有已识别的城市足迹，开启定位或从相册导入后这里会自动盖上城市章。")
@@ -267,7 +287,7 @@ struct PassportView: View {
 
     // MARK: - 4. Four Extremes, Special Stamps & Stamp Sets
 
-    private var extremesAndSetsSection: some View {
+    private func extremesAndSetsSection(_ summary: PassportSummary) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             if !summary.extremes.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {

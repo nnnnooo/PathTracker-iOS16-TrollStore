@@ -51,6 +51,6 @@
 - 由于 TrollStore 伪签 IPA 无法开启苹果付费开发者专属权限，原版中的 **iCloud / CloudKit 跨设备同步**、**平行足迹（CKShare）**、**Apple 天气（WeatherKit）**、**Apple 登录** 与 **Apple Watch 独立端** 不在本适配版范围内；数据迁移与防丢请使用「设置 → 本地备份与恢复（`.sqlite`）」。
 
 ## 云端自动编译与 TrollStore 安装
-1. 推送代码到本仓库 `main` 分支，GitHub Actions（`macos-15`）会自动通过 XcodeGen 生成工程并编译无签 Release 包。
-2. 在仓库 **Actions** → **Build iOS 16 IPA (TrollStore)** 运行记录底部的 **Artifacts** 中下载 `Waytrace-iOS16-MVP.zip`。
-3. 解压得到 `Waytrace-iOS16-MVP.ipa`，隔空投送到 iPhone，用 **TrollStore** 打开即可永久安装。
+1. 推送代码到本仓库 `main` 分支，GitHub Actions（`macos-15`）会自动通过 XcodeGen 生成工程并编译无签 Release 包（已开启自动取消旧排队任务，只编最新提交）。
+2. 在仓库 **Actions** → **Build iOS 16 TrollStore IPA** 运行记录底部的 **Artifacts** 中下载 `Waytrace-iOS16-TrollStore.zip`。
+3. 解压得到 `Waytrace-iOS16-TrollStore.ipa`，隔空投送到 iPhone，用 **TrollStore** 打开即可永久安装。
