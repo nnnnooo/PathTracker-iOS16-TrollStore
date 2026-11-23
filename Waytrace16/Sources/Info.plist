@@ -44,5 +44,7 @@
 	<string>用于结合运动协处理器识别步行、骑行、乘车等出行方式。</string>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>用于在本地读取照片和视频的拍摄位置与时间，帮你找回历史足迹，照片不会上传。</string>
+	<key>NSCameraUsageDescription</key>
+	<string>用于在本地实时扫描签证页机读码以自动填写签证信息，画面与照片不会保存或上传。</string>
 </dict>
 </plist>

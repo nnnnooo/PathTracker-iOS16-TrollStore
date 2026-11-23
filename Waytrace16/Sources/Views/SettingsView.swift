@@ -118,7 +118,7 @@ struct SettingsView: View {
                         showClearConfirm = true
                     }
                 } footer: {
-                    Text("Waytrace iOS 16 · 第 3 批增强版（此生必去 200 处 / 旅行盲盒 / 护照印章 / 分享卡片 / 旅程 / 统计图表 / 本地备份）。")
+                    Text("Waytrace iOS 16 · 完整版（全天定位 / 旅程 / 统计图表 / 护照印章 / 此生必去 / 旅行盲盒 / 签证夹 / 本地备份）。")
                 }
             }
             .navigationTitle("设置")
