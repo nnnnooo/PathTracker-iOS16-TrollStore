@@ -41,6 +41,7 @@ struct WorldView: View {
                     mapSection
                     statsGrid
                     passportBanner
+                    mustSeeAndBlindBoxRow
                     photoImportBanner
                     if !countryStats.isEmpty {
                         regionSection(title: "去过的国家 / 地区", stats: countryStats)
@@ -138,6 +139,60 @@ struct WorldView: View {
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
         .buttonStyle(.plain)
+    }
+
+    private var mustSeeAndBlindBoxRow: some View {
+        HStack(spacing: 10) {
+            NavigationLink {
+                MustSeeView()
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "star.fill")
+                            .foregroundColor(.orange)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Text("此生必去")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                    Text("中国 100 · 世界 100")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+
+            NavigationLink {
+                BlindBoxView()
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Image(systemName: "gift.fill")
+                            .foregroundColor(.pink)
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                    Text("旅行盲盒")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                    Text("拆登机牌去未知之地")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+                .padding(14)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     private var photoImportBanner: some View {
