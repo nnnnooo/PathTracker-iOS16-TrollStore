@@ -223,7 +223,6 @@ enum PlaceCategory: Equatable, Sendable {
         case .cafe: self = .cafe
         case .nightlife: self = .nightlife
         case .store: self = .shopping
-        case .nationalMonument: self = .landmark
         case .museum, .library: self = .museum
         case .park, .amusementPark, .zoo, .aquarium: self = .park
         case .nationalPark, .beach, .campground: self = .nature
@@ -235,7 +234,7 @@ enum PlaceCategory: Equatable, Sendable {
         case .hospital, .pharmacy: self = .health
         case .school, .university: self = .school
         default:
-            if category.rawValue == "MKPOICategoryLandmark" {
+            if category.rawValue == "MKPOICategoryLandmark" || category.rawValue == "MKPOICategoryNationalMonument" {
                 self = .landmark
             } else {
                 self = .other
@@ -244,7 +243,7 @@ enum PlaceCategory: Equatable, Sendable {
     }
 
     static let landmarkCategories: [MKPointOfInterestCategory] = [
-        .nationalMonument, .museum, .nationalPark, .park,
+        .museum, .nationalPark, .park,
         .amusementPark, .zoo, .aquarium, .beach, .stadium, .theater,
     ]
 
@@ -256,18 +255,22 @@ enum PlaceCategory: Equatable, Sendable {
         guard let category else { return false }
         return landmarkCategories.contains(category)
             || category.rawValue == "MKPOICategoryLandmark"
+            || category.rawValue == "MKPOICategoryNationalMonument"
             || category.rawValue == "MKPOICategoryScenicView"
     }
 
     static func rankingScore(_ category: MKPointOfInterestCategory?, distance: CLLocationDistance) -> Double {
         let handicap: Double
         switch category {
-        case .nationalMonument: handicap = 0
         case .museum, .nationalPark, .zoo, .aquarium, .stadium, .theater: handicap = 60
         case .park, .beach: handicap = 90
         case .amusementPark: handicap = 150
         default:
-            handicap = (category?.rawValue == "MKPOICategoryLandmark") ? 0 : 120
+            if category?.rawValue == "MKPOICategoryLandmark" || category?.rawValue == "MKPOICategoryNationalMonument" {
+                handicap = 0
+            } else {
+                handicap = 120
+            }
         }
         return distance + handicap
     }

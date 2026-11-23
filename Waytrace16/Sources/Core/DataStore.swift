@@ -107,7 +107,7 @@ final class DataStore: ObservableObject {
         sqlite3_bind_double(stmt, 8, chunk.minLongitude)
         sqlite3_bind_double(stmt, 9, chunk.maxLongitude)
         bindText(stmt, 10, chunk.modeRaw)
-        chunk.pointsData.withUnsafeBytes { raw in
+        _ = chunk.pointsData.withUnsafeBytes { raw in
             sqlite3_bind_blob(stmt, 11, raw.baseAddress, Int32(chunk.pointsData.count), SQLITE_TRANSIENT)
         }
         sqlite3_step(stmt)
