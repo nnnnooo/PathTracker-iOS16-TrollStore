@@ -2,10 +2,12 @@ import SwiftUI
 import CoreLocation
 
 struct TodayView: View {
+    @Binding var showingSettings: Bool
     @EnvironmentObject private var store: DataStore
     @EnvironmentObject private var engine: LocationEngine
     @EnvironmentObject private var tagger: PlaceTagger
 
+    @AppStorage("wt16.timeline.newestFirst") private var newestFirst = true
     @State private var selectedDate = Date()
     @State private var showDatePicker = false
     @State private var showFullScreenMap = false
@@ -33,44 +35,84 @@ struct TodayView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 16) {
-                    dateBar
+                VStack(alignment: .leading, spacing: 16) {
+                    if isToday {
+                        statusCard
+                        if let reunion = reunionMoment { reunionCard(reunion) }
+                        if !onThisDayMemories.isEmpty { onThisDaySection }
+                    }
+
                     mapCard
-                    if let reunion = reunionMoment { reunionCard(reunion) }
-                    if isToday { statusCard }
-                    metricsRow
-                    if !onThisDayMemories.isEmpty { onThisDaySection }
+                    metricsBar
                     timelineSection
-                    if !dayChunks.isEmpty || !dayStays.isEmpty { shareDaySection }
-                }
-                .padding(.horizontal, 16)
-                .padding(.bottom, 24)
-            }
-            .background(Color(.systemGroupedBackground))
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        showNewRecording = true
-                    } label: {
-                        Image(systemName: engine.activeTrip != nil ? "record.circle.fill" : "record.circle")
-                            .foregroundColor(engine.activeTrip != nil ? .red : .accentColor)
+
+                    if !dayChunks.isEmpty || !dayStays.isEmpty {
+                        shareDaySection
                     }
                 }
+                .padding(.horizontal)
+                .padding(.bottom, isToday ? 24 : 72)
+            }
+            .scrollIndicators(.hidden)
+            .background(Color(.systemGroupedBackground))
+            .overlay(alignment: .bottom) {
+                if !isToday {
+                    Button {
+                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                            selectedDate = Date()
+                        }
+                    } label: {
+                        Label("回到今天", systemImage: "arrow.uturn.forward")
+                            .font(.subheadline.weight(.semibold))
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 10)
+                            .background(Color.accentColor, in: Capsule())
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                    }
+                    .padding(.bottom, 12)
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItemGroup(placement: .navigationBarLeading) {
+                    Button {
+                        shift(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    Button {
+                        shift(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(isToday)
+                }
+
                 ToolbarItem(placement: .principal) {
-                    VStack(spacing: 1) {
+                    VStack(spacing: 0) {
                         Text(Formatters.dayTitle(selectedDate)).font(.headline)
                         Text(Formatters.weekdaySubtitle(selectedDate))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
                 }
-                ToolbarItem(placement: .navigationBarTrailing) {
+
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
+                    if engine.activeTrip == nil {
+                        Button {
+                            showNewRecording = true
+                        } label: {
+                            Image(systemName: "record.circle")
+                                .foregroundColor(.orange)
+                        }
+                    }
                     Button {
                         showDatePicker = true
                     } label: {
                         Image(systemName: "calendar")
                     }
+                    ProfileToolbarButton(showingSettings: $showingSettings)
                 }
             }
             .sheet(isPresented: $showDatePicker) {
@@ -81,6 +123,12 @@ struct TodayView: View {
                         .navigationTitle("选择日期")
                         .navigationBarTitleDisplayMode(.inline)
                         .toolbar {
+                            ToolbarItem(placement: .navigationBarLeading) {
+                                Button("今天") {
+                                    selectedDate = Date()
+                                    showDatePicker = false
+                                }
+                            }
                             ToolbarItem(placement: .confirmationAction) {
                                 Button("完成") { showDatePicker = false }
                             }
@@ -107,126 +155,87 @@ struct TodayView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showNewRecording) {
-                NewRecordingSheet()
-            }
-            .sheet(item: $editingStay) { stay in
-                StayEditSheet(stay: stay)
-            }
-            .sheet(item: $editingChunk) { chunk in
-                MoveDetailSheet(chunk: chunk)
-            }
-            .onChange(of: selectedDate) { _ in
-                dayShareCardURL = nil
-            }
+            .sheet(isPresented: $showNewRecording) { NewRecordingSheet() }
+            .sheet(item: $editingStay) { stay in StayEditSheet(stay: stay) }
+            .sheet(item: $editingChunk) { chunk in MoveDetailSheet(chunk: chunk) }
+            .onChange(of: selectedDate) { _ in dayShareCardURL = nil }
         }
     }
 
-    private var dateBar: some View {
-        HStack {
-            Button {
-                selectedDate = Calendar.current.date(byAdding: .day, value: -1, to: selectedDate) ?? selectedDate
-            } label: {
-                Label("前一天", systemImage: "chevron.left")
-                    .font(.subheadline)
-            }
-            Spacer()
-            if !isToday {
-                Button("回到今天") {
-                    selectedDate = Date()
-                }
-                .font(.subheadline.weight(.medium))
-            }
-            Spacer()
-            Button {
-                let next = Calendar.current.date(byAdding: .day, value: 1, to: selectedDate) ?? selectedDate
-                if next <= Date() { selectedDate = next }
-            } label: {
-                HStack(spacing: 4) {
-                    Text("后一天")
-                    Image(systemName: "chevron.right")
-                }
-                .font(.subheadline)
-            }
-            .disabled(isToday)
-        }
-        .padding(.top, 8)
+    private func shift(by days: Int) {
+        guard let next = Calendar.current.date(byAdding: .day, value: days, to: selectedDate),
+              next <= Date() else { return }
+        selectedDate = next
     }
 
     private var mapCard: some View {
-        ZStack(alignment: .bottomTrailing) {
-            DayRouteMapView(
-                chunks: dayChunks,
-                pendingPoints: isToday ? engine.pendingPoints : [],
-                stays: dayStays,
-                currentLocation: engine.currentLocation
-            )
-            .frame(height: 240)
-            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        Button {
+            showFullScreenMap = true
+        } label: {
+            ZStack(alignment: .bottomLeading) {
+                DayRouteMapView(
+                    chunks: dayChunks,
+                    pendingPoints: isToday ? engine.pendingPoints : [],
+                    stays: dayStays,
+                    currentLocation: engine.currentLocation
+                )
+                .allowsHitTesting(false)
 
-            Button {
-                showFullScreenMap = true
-            } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right")
-                    .font(.subheadline.weight(.semibold))
-                    .padding(10)
-                    .background(.ultraThinMaterial, in: Circle())
+                if dayChunks.isEmpty && dayStays.isEmpty && (!isToday || engine.pendingPoints.isEmpty) {
+                    Rectangle().fill(.ultraThinMaterial)
+                    Label("这一天还没有轨迹", systemImage: "map")
+                        .font(.headline)
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Label("查看地图", systemImage: "arrow.up.left.and.arrow.down.right")
+                        .font(.footnote.weight(.semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(12)
+                }
             }
-            .padding(10)
+            .frame(height: 250)
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         }
+        .buttonStyle(PressableStyle())
     }
 
     private var statusCard: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 10, height: 10)
+        WaytraceCard(padding: 14, cornerRadius: 22) {
+            HStack(spacing: 12) {
+                if engine.isRecording && engine.hasAnyPermission {
+                    PulsingDot(color: statusColor)
+                } else {
+                    Circle().fill(statusColor).frame(width: 8, height: 8)
+                }
                 VStack(alignment: .leading, spacing: 2) {
                     Text(statusHeadline).font(.subheadline.weight(.semibold))
                     Text(statusDetail).font(.caption).foregroundColor(.secondary)
                 }
                 Spacer()
                 if engine.activeTrip != nil {
-                    Button("结束记录") {
-                        engine.endActiveRecording()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .controlSize(.small)
+                    Button("结束") { engine.endActiveRecording() }
+                        .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
                 } else if !engine.hasAlwaysPermission {
-                    Button("授予始终定位") {
-                        if engine.authorization == .notDetermined {
-                            engine.requestWhenInUse()
-                        } else {
-                            engine.requestAlways()
-                        }
+                    Button("始终定位") {
+                        if engine.authorization == .notDetermined { engine.requestWhenInUse() }
+                        else { engine.requestAlways() }
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    .buttonStyle(.borderedProminent).controlSize(.small)
                 } else if !engine.isEnabled {
-                    Button("开启记录") {
-                        engine.isEnabled = true
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    Button("开启") { engine.isEnabled = true }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
                 } else if engine.isPaused {
-                    Button("恢复") {
-                        engine.resume()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.small)
+                    Button("恢复") { engine.resume() }
+                        .buttonStyle(.borderedProminent).controlSize(.small)
                 } else {
-                    Button("暂停") {
-                        showPauseMenu = true
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
+                    Button("暂停") { showPauseMenu = true }
+                        .buttonStyle(.bordered).controlSize(.small)
                 }
             }
         }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .confirmationDialog("暂停全天记录", isPresented: $showPauseMenu, titleVisibility: .visible) {
             Button("暂停 1 小时") { engine.pause(until: Date().addingTimeInterval(3600)) }
             Button("暂停 3 小时") { engine.pause(until: Date().addingTimeInterval(3 * 3600)) }
@@ -248,45 +257,45 @@ struct TodayView: View {
     }
 
     private var statusHeadline: String {
-        if let active = engine.activeTrip {
-            return "正在高精度记录：\(active.title)"
-        }
+        if let active = engine.activeTrip { return "正在记录：\(active.title)" }
         if engine.isPaused {
             if engine.isPausedIndefinitely { return "已暂停记录" }
             if let until = engine.pausedUntil { return "已暂停至 \(Formatters.timeHM(until))" }
         }
-        if let stay = engine.openStay, engine.isRecording {
-            return "停留在 \(stay.displayName)"
-        }
+        if let stay = engine.openStay, engine.isRecording { return "停留在 \(stay.displayName)" }
         return engine.activity.title
     }
 
     private var statusDetail: String {
-        if engine.activeTrip != nil {
-            return "手动运动记录中（高精度 GPS）"
-        }
-        if !engine.hasAlwaysPermission {
-            return "需要「始终允许」定位权限才能在后台自动记录轨迹"
-        }
-        return "当前模式：\(engine.precision.title)" + (tagger.isTagging ? " · 正在识别地点(\(tagger.pendingCount))" : "")
+        if engine.activeTrip != nil { return "手动高精度记录中" }
+        if !engine.hasAlwaysPermission { return "需要「始终允许」定位权限以全天后台记录" }
+        return "模式：\(engine.precision.title)" + (tagger.isTagging ? " · \(tagger.progressText ?? "识别地点中(\(tagger.pendingCount))")" : "")
     }
 
-    private var metricsRow: some View {
+    private var metricsBar: some View {
         HStack(spacing: 0) {
-            metricItem(title: "移动距离", value: Formatters.distance(dayDistance))
-            Divider().frame(height: 30)
-            metricItem(title: "停留地点", value: "\(dayStays.count)")
-            Divider().frame(height: 30)
-            metricItem(title: "轨迹分段", value: "\(dayChunks.count)")
+            dayFigure(value: Formatters.distance(dayDistance), label: "移动", symbol: "point.topright.arrow.triangle.backward.to.point.bottomleft.scurvepath", tint: .blue)
+            Divider().frame(height: 34)
+            dayFigure(value: "\(dayStays.count)", label: "个地点", symbol: "mappin.and.ellipse", tint: .pink)
+            Divider().frame(height: 34)
+            dayFigure(value: "\(dayChunks.count)", label: "段行程", symbol: "figure.walk", tint: .green)
         }
         .padding(.vertical, 12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
     }
 
-    private func metricItem(title: String, value: String) -> some View {
-        VStack(spacing: 4) {
-            Text(value).font(.headline)
-            Text(title).font(.caption).foregroundColor(.secondary)
+    private func dayFigure(value: String, label: String, symbol: String, tint: Color) -> some View {
+        VStack(spacing: 3) {
+            Text(value)
+                .font(.system(.title3, design: .rounded, weight: .bold))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+            HStack(spacing: 3) {
+                Image(systemName: symbol).foregroundColor(tint)
+                Text(label).foregroundColor(.secondary)
+            }
+            .font(.caption.weight(.medium))
         }
         .frame(maxWidth: .infinity)
     }
@@ -311,44 +320,54 @@ struct TodayView: View {
     }
 
     private var timelineEntries: [TimelineEntry] {
-        let all: [TimelineEntry] = dayStays.map { .stay($0) } + dayChunks.map { .move($0) }
-        return all.sorted { $0.sortDate < $1.sortDate }
+        let sorted = (dayStays.map { TimelineEntry.stay($0) } + dayChunks.map { TimelineEntry.move($0) })
+            .sorted { $0.sortDate < $1.sortDate }
+        return newestFirst ? sorted.reversed() : sorted
     }
 
     private var timelineSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("时间线").font(.headline).padding(.horizontal, 4)
+            HStack(alignment: .firstTextBaseline) {
+                Text("时间线").font(.title3.bold())
+                Spacer()
+                if !timelineEntries.isEmpty {
+                    Button {
+                        withAnimation { newestFirst.toggle() }
+                    } label: {
+                        Label(newestFirst ? "最新在前" : "最早在前", systemImage: "arrow.up.arrow.down")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 4)
+            .padding(.top, 4)
 
             if timelineEntries.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "map")
+                    Image(systemName: "figure.walk.departure")
                         .font(.largeTitle)
                         .foregroundColor(.secondary)
-                    Text("这一天还没有足迹记录")
-                        .font(.subheadline)
+                    Text(isToday ? "今天的故事刚刚开始" : "没有记录")
+                        .font(.headline)
+                    Text(isToday ? "带着手机出发吧，停留超过几分钟的地方会出现在这里。" : "这一天没有记录到轨迹或停留。")
+                        .font(.caption)
                         .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 36)
-                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .padding(.vertical, 32)
+                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             } else {
                 VStack(spacing: 10) {
                     ForEach(timelineEntries) { entry in
                         switch entry {
                         case .stay(let stay):
-                            Button {
-                                editingStay = stay
-                            } label: {
-                                stayRow(stay)
-                            }
-                            .buttonStyle(.plain)
+                            Button { editingStay = stay } label: { stayRow(stay) }
+                                .buttonStyle(.plain)
                         case .move(let chunk):
-                            Button {
-                                editingChunk = chunk
-                            } label: {
-                                moveRow(chunk)
-                            }
-                            .buttonStyle(.plain)
+                            Button { editingChunk = chunk } label: { moveRow(chunk) }
+                                .buttonStyle(.plain)
                         }
                     }
                 }
@@ -373,11 +392,7 @@ struct TodayView: View {
             }
             .frame(width: 44, alignment: .trailing)
 
-            Image(systemName: stay.category.symbol)
-                .font(.subheadline)
-                .foregroundColor(.white)
-                .frame(width: 34, height: 34)
-                .background(stay.category.tint, in: Circle())
+            PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 36)
 
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
@@ -400,9 +415,7 @@ struct TodayView: View {
                 }
                 HStack(spacing: 6) {
                     Text(Formatters.duration(stay.duration))
-                    if let sub = stay.subtitle {
-                        Text("· \(sub)")
-                    }
+                    if let sub = stay.subtitle { Text("· \(sub)") }
                 }
                 .font(.caption)
                 .foregroundColor(.secondary)
@@ -418,11 +431,11 @@ struct TodayView: View {
             }
             Spacer()
             Image(systemName: "chevron.right")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.secondary.opacity(0.5))
         }
-        .padding(12)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private func moveRow(_ chunk: TrackChunk) -> some View {
@@ -435,7 +448,7 @@ struct TodayView: View {
             Image(systemName: chunk.mode.symbol)
                 .font(.caption)
                 .foregroundColor(chunk.mode.color)
-                .frame(width: 34)
+                .frame(width: 36)
 
             Text("\(chunk.mode.title) · \(Formatters.distance(chunk.distance)) · \(Formatters.duration(chunk.duration))")
                 .font(.caption)
@@ -445,9 +458,9 @@ struct TodayView: View {
 
             Image(systemName: "chevron.right")
                 .font(.caption2)
-                .foregroundColor(.secondary.opacity(0.6))
+                .foregroundColor(.secondary.opacity(0.5))
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 14)
         .padding(.vertical, 6)
     }
 
@@ -459,14 +472,14 @@ struct TodayView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("久别重逢 · \(reunion.placeName)")
                     .font(.subheadline.weight(.semibold))
-                Text("距离上次来到这里已经过去 \(reunion.daysSinceLastVisit) 天（上次：\(Formatters.dayTitle(reunion.lastVisitDate))），这是你的第 \(reunion.totalVisits) 次到访。")
+                Text("距离上次来到这里已经过去 \(reunion.daysSinceLastVisit) 天（上次：\(Formatters.dayTitle(reunion.lastVisitDate))），这是第 \(reunion.totalVisits) 次到访。")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }
             Spacer()
         }
         .padding(14)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
     }
 
     private var onThisDaySection: some View {
@@ -489,9 +502,9 @@ struct TodayView: View {
                                     .lineLimit(1)
                             }
                         }
-                        .padding(12)
+                        .padding(14)
                         .frame(width: 170, alignment: .leading)
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                     }
                 }
             }
@@ -650,29 +663,19 @@ private struct StayEditSheet: View {
                     LabeledContent("到达", value: Formatters.timeHM(stay.arrival))
                     LabeledContent("离开", value: stay.departure.map(Formatters.timeHM) ?? "停留中")
                     LabeledContent("时长", value: Formatters.duration(stay.duration))
-                    if let sub = stay.subtitle {
-                        LabeledContent("区域", value: sub)
-                    }
-                    if let street = stay.street {
-                        LabeledContent("街道", value: street)
-                    }
+                    if let sub = stay.subtitle { LabeledContent("区域", value: sub) }
+                    if let street = stay.street { LabeledContent("街道", value: street) }
                 }
 
                 Section {
-                    Button("删除此条停留记录", role: .destructive) {
-                        showDeleteConfirm = true
-                    }
+                    Button("删除此条停留记录", role: .destructive) { showDeleteConfirm = true }
                 }
             }
             .navigationTitle("停留详情")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                isPrivateZone = store.isCoordinatePrivate(stay.coordinate)
-            }
+            .onAppear { isPrivateZone = store.isCoordinatePrivate(stay.coordinate) }
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
+                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("保存") {
                         let cat: String? = selectedCategory == "auto" ? nil : selectedCategory

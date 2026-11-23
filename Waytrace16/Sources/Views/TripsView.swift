@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct TripsView: View {
+    @Binding var showingSettings: Bool
     @EnvironmentObject private var store: DataStore
     @EnvironmentObject private var engine: LocationEngine
 
@@ -76,8 +77,9 @@ struct TripsView: View {
             }
             .background(Color(.systemGroupedBackground))
             .navigationTitle("旅程")
+            .scrollIndicators(.hidden)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
+                ToolbarItemGroup(placement: .navigationBarTrailing) {
                     Menu {
                         Button {
                             showNewRecording = true
@@ -92,6 +94,7 @@ struct TripsView: View {
                     } label: {
                         Image(systemName: "plus.circle.fill")
                     }
+                    ProfileToolbarButton(showingSettings: $showingSettings)
                 }
             }
             .sheet(isPresented: $showNewRecording) {

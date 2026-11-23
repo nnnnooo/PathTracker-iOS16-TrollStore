@@ -2,6 +2,7 @@ import SwiftUI
 import Charts
 
 struct StatsView: View {
+    @Binding var showingSettings: Bool
     @EnvironmentObject private var store: DataStore
 
     enum Period: String, CaseIterable, Identifiable {
@@ -87,8 +88,14 @@ struct StatsView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
             }
+            .scrollIndicators(.hidden)
             .background(Color(.systemGroupedBackground))
             .navigationTitle("统计")
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    ProfileToolbarButton(showingSettings: $showingSettings)
+                }
+            }
         }
     }
 

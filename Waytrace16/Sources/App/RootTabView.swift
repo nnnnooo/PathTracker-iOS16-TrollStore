@@ -1,32 +1,32 @@
 import SwiftUI
 
 struct RootTabView: View {
+    @State private var showingSettings = false
+
     var body: some View {
         TabView {
-            TodayView()
+            TodayView(showingSettings: $showingSettings)
                 .tabItem {
-                    Label("今天", systemImage: "location.fill")
+                    Label("今天", systemImage: "point.topright.filled.arrow.triangle.backward.to.point.bottomleft.scurvepath")
                 }
 
-            TripsView()
-                .tabItem {
-                    Label("旅程", systemImage: "suitcase.rolling.fill")
-                }
-
-            WorldView()
+            WorldView(showingSettings: $showingSettings)
                 .tabItem {
                     Label("足迹", systemImage: "globe.asia.australia.fill")
                 }
 
-            StatsView()
+            TripsView(showingSettings: $showingSettings)
                 .tabItem {
-                    Label("统计", systemImage: "chart.bar.fill")
+                    Label("旅程", systemImage: "suitcase.rolling.fill")
                 }
 
-            SettingsView()
+            StatsView(showingSettings: $showingSettings)
                 .tabItem {
-                    Label("设置", systemImage: "gearshape.fill")
+                    Label("统计", systemImage: "chart.bar.xaxis")
                 }
+        }
+        .sheet(isPresented: $showingSettings) {
+            SettingsView()
         }
     }
 }

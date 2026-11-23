@@ -2,10 +2,14 @@ import Foundation
 import CoreLocation
 import MapKit
 
+/// iOS 16 compatible place tagger using CLGeocoder + MKLocalPointsOfInterestRequest.
+/// Uses ~10 km grid bucketing for photo-imported stays so thousands of photos only need
+/// one reverse-geocode request per city/area instead of thousands of requests.
 @MainActor
 final class PlaceTagger: ObservableObject {
     @Published private(set) var isTagging = false
     @Published private(set) var pendingCount = 0
+    @Published private(set) var progressText: String?
 
     private let store: DataStore
     private let geocoder = CLGeocoder()
@@ -26,6 +30,7 @@ final class PlaceTagger: ObservableObject {
                 await processPending()
             } while needsAnotherPass
             isTagging = false
+            progressText = nil
             pendingCount = store.stays.filter { $0.tagState == .pending }.count
         }
     }
@@ -42,69 +47,128 @@ final class PlaceTagger: ObservableObject {
     }
 
     private func processPending() async {
+        // 1. Always prioritize live-recorded stays first (with POI lookup)
         let recordedPending = store.stays.filter { $0.tagState == .pending && !$0.isFromPhotos }
-        for var stay in recordedPending.prefix(80) {
-            let ok = await tagSingle(&stay, lookupPOI: true)
+        for var stay in recordedPending.prefix(50) {
+            let outcome = await tagSingle(&stay, lookupPOI: true)
+            if outcome == .rateLimited {
+                try? await Task.sleep(nanoseconds: 62_000_000_000)
+                let retry = await tagSingle(&stay, lookupPOI: true)
+                if retry != .done { return }
+            } else if outcome == .offline {
+                return
+            }
             store.upsertStay(stay)
             pendingCount = store.stays.filter { $0.tagState == .pending }.count
-            if !ok { return }
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
         }
 
+        // 2. Fast area-bucketed tagging for photo-imported stays (1 request per ~10 km grid cell)
         let photoPending = store.stays.filter { $0.tagState == .pending && $0.isFromPhotos }
         guard !photoPending.isEmpty else { return }
 
-        var grid = PhotoGrid()
-        for stay in store.stays where stay.tagState == .tagged && stay.countryCode != nil {
-            grid.add(stay)
+        let taggedSnapshot = store.stays.filter { $0.tagState == .tagged && $0.countryCode != nil }
+
+        // Group pending photo stays into ~10 km cells off the main thread
+        let plan = await Task.detached(priority: .userInitiated) { () -> (copied: [Stay], buckets: [[Stay]]) in
+            var grid = AreaGrid(cellDegrees: 0.09) // ~10 km
+            for stay in taggedSnapshot { grid.add(stay) }
+
+            var copied: [Stay] = []
+            var pendingBuckets: [Int64: [Stay]] = [:]
+
+            for var stay in photoPending {
+                if let neighbour = grid.nearest(to: stay, within: 10_000) {
+                    stay.country = neighbour.country
+                    stay.countryCode = neighbour.countryCode
+                    stay.city = neighbour.city
+                    stay.region = neighbour.region
+                    stay.timeZoneID = neighbour.timeZoneID
+                    stay.tagState = .tagged
+                    copied.append(stay)
+                } else {
+                    let k = grid.bucketKey(lat: stay.latitude, lon: stay.longitude)
+                    pendingBuckets[k, default: []].append(stay)
+                }
+            }
+            // Largest buckets first so the most stays get named immediately
+            let sortedBuckets = pendingBuckets.values.sorted { $0.count > $1.count }
+            return (copied, sortedBuckets)
+        }.value
+
+        if !plan.copied.isEmpty {
+            store.updateStaysBatch(plan.copied)
+            pendingCount = store.stays.filter { $0.tagState == .pending }.count
         }
 
-        var batchCopied: [Stay] = []
-        var needGeocode: [Stay] = []
-
-        for var stay in photoPending {
-            if let neighbour = grid.nearest(to: stay, within: 3_000) {
-                stay.country = neighbour.country
-                stay.countryCode = neighbour.countryCode
-                stay.city = neighbour.city
-                stay.region = neighbour.region
-                stay.timeZoneID = neighbour.timeZoneID
-                stay.tagState = .tagged
-                batchCopied.append(stay)
-            } else {
-                needGeocode.append(stay)
-            }
+        let totalBuckets = plan.buckets.count
+        guard totalBuckets > 0 else {
+            _ = await PhotoFootprints.consolidate(in: store)
+            return
         }
-        if !batchCopied.isEmpty { store.updateStaysBatch(batchCopied) }
 
-        var geocodedBatch: [Stay] = []
-        for var stay in needGeocode {
-            if let neighbour = grid.nearest(to: stay, within: 3_000) {
-                stay.country = neighbour.country
-                stay.countryCode = neighbour.countryCode
-                stay.city = neighbour.city
-                stay.region = neighbour.region
-                stay.timeZoneID = neighbour.timeZoneID
-                stay.tagState = .tagged
-                geocodedBatch.append(stay)
-                continue
+        var completedBuckets = 0
+        var stagedUpdates: [Stay] = []
+
+        for bucket in plan.buckets {
+            guard var representative = bucket.first else { continue }
+            progressText = "识别区域 \(completedBuckets + 1)/\(totalBuckets)"
+
+            var outcome = await tagSingle(&representative, lookupPOI: false)
+            if outcome == .rateLimited {
+                // Flush what we already have, wait out Apple's 1-minute geocoder window, and continue
+                if !stagedUpdates.isEmpty {
+                    store.updateStaysBatch(stagedUpdates)
+                    stagedUpdates.removeAll()
+                    pendingCount = store.stays.filter { $0.tagState == .pending }.count
+                }
+                progressText = "触发苹果频率限制，等待 60 秒继续 (\(completedBuckets)/\(totalBuckets))"
+                try? await Task.sleep(nanoseconds: 62_000_000_000)
+                outcome = await tagSingle(&representative, lookupPOI: false)
             }
-            let ok = await tagSingle(&stay, lookupPOI: false)
-            if stay.countryCode != nil { grid.add(stay) }
-            geocodedBatch.append(stay)
-            if geocodedBatch.count >= 8 {
-                store.updateStaysBatch(geocodedBatch)
-                geocodedBatch.removeAll()
+
+            if outcome != .done {
+                if !stagedUpdates.isEmpty {
+                    store.updateStaysBatch(stagedUpdates)
+                    stagedUpdates.removeAll()
+                }
+                break
+            }
+
+            // Apply the geocoded country/region/city/timezone to ALL stays in this ~10 km bucket
+            for var item in bucket {
+                item.country = representative.country
+                item.countryCode = representative.countryCode
+                item.region = representative.region
+                item.city = representative.city
+                item.street = item.street ?? representative.street
+                item.timeZoneID = representative.timeZoneID
+                item.tagState = representative.tagState
+                stagedUpdates.append(item)
+            }
+
+            completedBuckets += 1
+            if completedBuckets % 10 == 0 || stagedUpdates.count >= 200 {
+                store.updateStaysBatch(stagedUpdates)
+                stagedUpdates.removeAll()
                 pendingCount = store.stays.filter { $0.tagState == .pending }.count
             }
-            if !ok { break }
-            try? await Task.sleep(nanoseconds: 1_400_000_000)
+
+            // Stay just under Apple's 50 requests/minute limit (~46 req/min)
+            try? await Task.sleep(nanoseconds: 1_300_000_000)
         }
-        if !geocodedBatch.isEmpty { store.updateStaysBatch(geocodedBatch) }
+
+        if !stagedUpdates.isEmpty {
+            store.updateStaysBatch(stagedUpdates)
+            stagedUpdates.removeAll()
+        }
         _ = await PhotoFootprints.consolidate(in: store)
+        pendingCount = store.stays.filter { $0.tagState == .pending }.count
     }
 
-    private func tagSingle(_ stay: inout Stay, lookupPOI: Bool) async -> Bool {
+    private enum TagOutcome { case done, rateLimited, offline }
+
+    private func tagSingle(_ stay: inout Stay, lookupPOI: Bool) async -> TagOutcome {
         let location = stay.location
         do {
             let placemarks = try await geocoder.reverseGeocodeLocation(location, preferredLocale: Locale(identifier: "zh_CN"))
@@ -116,11 +180,17 @@ final class PlaceTagger: ObservableObject {
                 stay.street = [p.thoroughfare, p.subThoroughfare].compactMap { $0 }.joined().nilIfEmpty ?? p.name
                 stay.timeZoneID = p.timeZone?.identifier
             }
-        } catch let error as CLError where error.code == .network {
-            return false
+        } catch let error as CLError {
+            if error.code == .network {
+                return .rateLimited
+            }
+            stay.tagState = .failed
+            return .done
+        } catch let error as NSError where error.domain == NSURLErrorDomain {
+            return .offline
         } catch {
             stay.tagState = .failed
-            return true
+            return .done
         }
 
         if lookupPOI {
@@ -137,7 +207,7 @@ final class PlaceTagger: ObservableObject {
         }
 
         stay.tagState = (stay.country == nil && stay.city == nil) ? .failed : .tagged
-        return true
+        return .done
     }
 
     private func normalizeCity(placemark p: CLPlacemark) -> String? {
@@ -184,18 +254,21 @@ final class PlaceTagger: ObservableObject {
     }
 }
 
-private struct PhotoGrid {
+private struct AreaGrid {
     private var cells: [Int64: [Stay]] = [:]
-    private let size = 0.03
+    let cellDegrees: Double
 
     private func cell(_ lat: Double, _ lon: Double) -> (Int64, Int64) {
-        (Int64((lat / size).rounded(.down)), Int64((lon / size).rounded(.down)))
+        (Int64((lat / cellDegrees).rounded(.down)), Int64((lon / cellDegrees).rounded(.down)))
     }
 
-    private func key(_ c: (Int64, Int64)) -> Int64 { c.0 &* 100_000 &+ c.1 }
+    func bucketKey(lat: Double, lon: Double) -> Int64 {
+        let c = cell(lat, lon)
+        return c.0 &* 100_000 &+ c.1
+    }
 
     mutating func add(_ stay: Stay) {
-        cells[key(cell(stay.latitude, stay.longitude)), default: []].append(stay)
+        cells[bucketKey(lat: stay.latitude, lon: stay.longitude), default: []].append(stay)
     }
 
     func nearest(to stay: Stay, within radius: CLLocationDistance) -> Stay? {
@@ -204,7 +277,8 @@ private struct PhotoGrid {
         var countries = Set<String>()
         for dy in -1...1 {
             for dx in -1...1 {
-                for other in cells[key((c.0 + Int64(dy), c.1 + Int64(dx)))] ?? [] {
+                let k = (c.0 + Int64(dy)) &* 100_000 &+ (c.1 + Int64(dx))
+                for other in cells[k] ?? [] {
                     let d = other.location.distance(from: stay.location)
                     guard d <= radius else { continue }
                     if let code = other.countryCode { countries.insert(code) }

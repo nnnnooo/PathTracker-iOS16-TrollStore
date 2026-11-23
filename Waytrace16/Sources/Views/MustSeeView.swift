@@ -9,11 +9,10 @@ struct MustSeeView: View {
     @State private var listType: MustSee.ListType = .china
     @State private var filter = 0 // 0=全部, 1=已点亮, 2=未点亮, 3=想去
     @State private var selectedPlace: MustSeePlace?
+    @State private var visitedMap: [String: Date] = [:]
+    @State private var isLoading = true
 
     private var places: [MustSeePlace] { listType.places }
-    private var visitedMap: [String: Date] {
-        MustSee.visitedMap(places: places, stays: store.stays, manual: userStore.manualVisits)
-    }
     private var visitedCount: Int { visitedMap.count }
 
     private var filteredPlaces: [MustSeePlace] {
@@ -49,14 +48,19 @@ struct MustSeeView: View {
                 }
                 .pickerStyle(.segmented)
 
-                LazyVStack(spacing: 8) {
-                    ForEach(filteredPlaces) { place in
-                        Button {
-                            selectedPlace = place
-                        } label: {
-                            placeRow(place)
+                if isLoading {
+                    ProgressView("正在匹配足迹…")
+                        .padding(.vertical, 24)
+                } else {
+                    LazyVStack(spacing: 8) {
+                        ForEach(filteredPlaces) { place in
+                            Button {
+                                selectedPlace = place
+                            } label: {
+                                placeRow(place)
+                            }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
                     }
                 }
             }
@@ -66,6 +70,16 @@ struct MustSeeView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("此生必去")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: "\(listType.rawValue)-\(store.stays.count)-\(userStore.manualVisits.count)") {
+            let currentPlaces = listType.places
+            let staysSnapshot = store.stays
+            let manualSnapshot = userStore.manualVisits
+            let computed = await Task.detached(priority: .userInitiated) {
+                MustSee.visitedMap(places: currentPlaces, stays: staysSnapshot, manual: manualSnapshot)
+            }.value
+            visitedMap = computed
+            isLoading = false
+        }
         .sheet(item: $selectedPlace) { place in
             MustSeeDetailSheet(
                 place: place,
@@ -296,6 +310,24 @@ private struct MustSeeStarMap: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate {
         var lastSig = ""
 
+        private lazy var litImage: UIImage = {
+            let size: CGFloat = 14
+            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
+                UIColor.systemOrange.withAlphaComponent(0.35).setFill()
+                ctx.cgContext.fillEllipse(in: CGRect(x: 0, y: 0, width: size, height: size))
+                UIColor.systemYellow.setFill()
+                ctx.cgContext.fillEllipse(in: CGRect(x: 3.5, y: 3.5, width: size - 7, height: size - 7))
+            }
+        }()
+
+        private lazy var dimImage: UIImage = {
+            let size: CGFloat = 7
+            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
+                UIColor.white.withAlphaComponent(0.32).setFill()
+                ctx.cgContext.fillEllipse(in: CGRect(x: 0, y: 0, width: size, height: size))
+            }
+        }()
+
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             guard let ann = annotation as? MustSeeAnnotation else { return nil }
             let id = ann.lit ? "starLit" : "starDim"
@@ -303,19 +335,7 @@ private struct MustSeeStarMap: UIViewRepresentable {
                 ?? MKAnnotationView(annotation: ann, reuseIdentifier: id)
             view.annotation = ann
             view.canShowCallout = true
-            let size: CGFloat = ann.lit ? 14 : 7
-            let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
-            view.image = renderer.image { ctx in
-                if ann.lit {
-                    UIColor.systemOrange.withAlphaComponent(0.35).setFill()
-                    ctx.cgContext.fillEllipse(in: CGRect(x: 0, y: 0, width: size, height: size))
-                    UIColor.systemYellow.setFill()
-                    ctx.cgContext.fillEllipse(in: CGRect(x: 3.5, y: 3.5, width: size - 7, height: size - 7))
-                } else {
-                    UIColor.white.withAlphaComponent(0.32).setFill()
-                    ctx.cgContext.fillEllipse(in: CGRect(x: 0, y: 0, width: size, height: size))
-                }
-            }
+            view.image = ann.lit ? litImage : dimImage
             return view
         }
     }

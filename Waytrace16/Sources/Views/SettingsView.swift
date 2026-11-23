@@ -6,14 +6,16 @@ struct SettingsView: View {
     @EnvironmentObject private var store: DataStore
     @EnvironmentObject private var engine: LocationEngine
     @EnvironmentObject private var tagger: PlaceTagger
+    @Environment(\.dismiss) private var dismiss
 
     private enum ImportKind { case gpx, backup }
 
     @State private var showClearConfirm = false
     @State private var exportedGPXURL: URL?
     @State private var backupSQLiteURL: URL?
-    @State private var activeImportKind: ImportKind?
+    @State private var activeImportKind: ImportKind = .gpx
     @State private var isImporterPresented = false
+    @State private var isImportingGPX = false
     @State private var alertMessage: String?
 
     var body: some View {
@@ -65,17 +67,24 @@ struct SettingsView: View {
 
                 Section("轨迹导入与导出") {
                     LabeledContent("轨迹段 / 停留 / 旅程", value: "\(store.chunks.count) / \(store.stays.count) / \(store.trips.count)")
-                    LabeledContent("待识别地点", value: "\(tagger.pendingCount)")
+                    LabeledContent("待识别地点", value: tagger.progressText ?? "\(tagger.pendingCount)")
 
                     Button("重新识别未命名地点") {
                         tagger.retryFailed()
                         tagger.enqueue()
                     }
 
-                    Button("导入 GPX 轨迹文件") {
+                    Button {
                         activeImportKind = .gpx
                         isImporterPresented = true
+                    } label: {
+                        HStack {
+                            Text("导入 GPX 轨迹文件")
+                            Spacer()
+                            if isImportingGPX { ProgressView() }
+                        }
                     }
+                    .disabled(isImportingGPX)
 
                     if let url = exportedGPXURL {
                         ShareLink(item: url) {
@@ -118,39 +127,48 @@ struct SettingsView: View {
                         showClearConfirm = true
                     }
                 } footer: {
-                    Text("Waytrace iOS 16 · TrollStore 完整版（全天定位 / 旅程 / 统计图表 / 护照印章 / 此生必去 / 旅行盲盒 / 签证夹 / 本地备份）。")
+                    Text("漫迹 Waytrace · iOS 16 / TrollStore 适配版")
                 }
             }
             .navigationTitle("设置")
-            // Single unified .fileImporter to avoid the iOS 16 SwiftUI bug where multiple .fileImporter modifiers conflict
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
             .fileImporter(
                 isPresented: $isImporterPresented,
                 allowedContentTypes: [.item],
                 allowsMultipleSelection: activeImportKind == .gpx
             ) { result in
                 let kind = activeImportKind
-                activeImportKind = nil
-                switch result {
-                case .success(let urls):
-                    if kind == .gpx {
-                        var chunksAdded = 0, staysAdded = 0, skipped = 0
-                        for url in urls {
-                            let s = GPXImporter.importFile(at: url, into: store)
-                            chunksAdded += s.addedChunks
-                            staysAdded += s.addedStays
-                            skipped += s.skippedDuplicates
-                        }
-                        tagger.enqueue()
-                        alertMessage = "导入完成：新增 \(chunksAdded) 段轨迹、\(staysAdded) 个地点（跳过重复 \(skipped) 项）。"
-                    } else if kind == .backup {
-                        if let first = urls.first, store.restoreBackup(from: first) {
-                            alertMessage = "数据库已恢复：共载入 \(store.chunks.count) 段轨迹、\(store.stays.count) 个地点、\(store.trips.count) 段旅程。"
+                Task { @MainActor in
+                    // Wait for UIDocumentPickerViewController to finish dismissing before presenting alerts on iOS 16
+                    try? await Task.sleep(nanoseconds: 450_000_000)
+                    switch result {
+                    case .success(let urls):
+                        guard !urls.isEmpty else { return }
+                        if kind == .gpx {
+                            isImportingGPX = true
+                            let s = await GPXImporter.importFiles(at: urls, into: store)
+                            isImportingGPX = false
+                            tagger.enqueue()
+                            if let err = s.errorMessage {
+                                alertMessage = "GPX 导入未成功：\(err)"
+                            } else {
+                                alertMessage = "导入完成：新增 \(s.addedChunks) 段轨迹、\(s.addedStays) 个地点（跳过重复 \(s.skippedDuplicates) 项）。"
+                            }
                         } else {
-                            alertMessage = "恢复失败，请确认选择的是有效的 Waytrace16-Backup.sqlite 文件。"
+                            if let first = urls.first, store.restoreBackup(from: first) {
+                                alertMessage = "数据库已恢复：共载入 \(store.chunks.count) 段轨迹、\(store.stays.count) 个地点、\(store.trips.count) 段旅程。"
+                            } else {
+                                alertMessage = "恢复失败，请确认选择的是有效的 Waytrace16-Backup.sqlite 文件。"
+                            }
                         }
+                    case .failure(let err):
+                        alertMessage = "打开文件失败：\(err.localizedDescription)"
                     }
-                case .failure(let err):
-                    alertMessage = "操作失败：\(err.localizedDescription)"
                 }
             }
             .alert("提示", isPresented: Binding(get: { alertMessage != nil }, set: { if !$0 { alertMessage = nil } })) {

@@ -12,11 +12,7 @@ struct BlindBoxView: View {
     @State private var vibe: BlindBoxEngine.Vibe = .any
     @State private var currentPass: BoardingPass?
     @State private var isShaking = false
-
-    private var visitedIDs: Set<String> {
-        let map = MustSee.visitedMap(places: MustSee.allPlaces, stays: store.stays, manual: userStore.manualVisits)
-        return Set(map.keys)
-    }
+    @State private var visitedIDs: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -39,6 +35,14 @@ struct BlindBoxView: View {
         .background(Color(.systemGroupedBackground))
         .navigationTitle("旅行盲盒")
         .navigationBarTitleDisplayMode(.inline)
+        .task(id: "\(store.stays.count)-\(userStore.manualVisits.count)") {
+            let staysSnapshot = store.stays
+            let manualSnapshot = userStore.manualVisits
+            let computed = await Task.detached(priority: .userInitiated) {
+                Set(MustSee.visitedMap(places: MustSee.allPlaces, stays: staysSnapshot, manual: manualSnapshot).keys)
+            }.value
+            visitedIDs = computed
+        }
     }
 
     private var selectorCard: some View {

@@ -283,12 +283,12 @@ enum MovementMode: String, CaseIterable, Sendable {
     var uiColor: UIColor {
         switch self {
         case .walking: return .systemGreen
-        case .running: return .systemMint
-        case .cycling: return .systemOrange
+        case .running: return .systemOrange
+        case .cycling: return .systemTeal
         case .automotive: return .systemBlue
-        case .subway: return .systemPurple
-        case .flying: return .systemCyan
-        case .unknown: return .systemTeal
+        case .subway: return .systemIndigo
+        case .flying: return .systemPurple
+        case .unknown: return .systemGray
         }
     }
 
