@@ -233,6 +233,7 @@ struct TripDetailView: View {
 
     let trip: Trip
     @State private var exportedURL: URL?
+    @State private var shareCardURL: URL?
     @State private var showDeleteConfirm = false
 
     private var chunks: [TrackChunk] { store.chunks(for: trip) }
@@ -312,12 +313,34 @@ struct TripDetailView: View {
                     }
                 }
 
+                if let cardURL = shareCardURL {
+                    ShareLink(item: cardURL) {
+                        Label("分享旅程明信片图片", systemImage: "square.and.arrow.up")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button {
+                        shareCardURL = ShareCardGenerator.renderTripCard(
+                            trip: trip,
+                            distance: totalDistance,
+                            stays: stays,
+                            chunks: chunks,
+                            privacyZones: store.privacyZones
+                        )
+                    } label: {
+                        Label("生成旅程分享明信片", systemImage: "photo.artframe")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+
                 if let url = exportedURL {
                     ShareLink(item: url) {
                         Label("分享此旅程 GPX", systemImage: "square.and.arrow.up")
                             .frame(maxWidth: .infinity)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                 } else {
                     Button {
                         exportedURL = GPXExporter.export(

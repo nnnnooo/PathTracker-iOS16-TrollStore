@@ -40,6 +40,7 @@ struct WorldView: View {
                 VStack(spacing: 16) {
                     mapSection
                     statsGrid
+                    passportBanner
                     photoImportBanner
                     if !countryStats.isEmpty {
                         regionSection(title: "去过的国家 / 地区", stats: countryStats)
@@ -108,6 +109,35 @@ struct WorldView: View {
         }
         .padding(14)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var passportBanner: some View {
+        NavigationLink {
+            PassportView()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "book.closed.fill")
+                    .font(.title2)
+                    .foregroundColor(Color(red: 0.87, green: 0.74, blue: 0.42))
+                    .frame(width: 40, height: 40)
+                    .background(Color(red: 0.42, green: 0.11, blue: 0.15), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("我的漫迹护照与印章")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                    Text("出入境章 · 中国 34 省朱砂印 · 城市章 · 四至与套章")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     private var photoImportBanner: some View {

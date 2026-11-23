@@ -13,10 +13,17 @@ struct TodayView: View {
     @State private var showNewRecording = false
     @State private var editingStay: Stay?
     @State private var editingChunk: TrackChunk?
+    @State private var dayShareCardURL: URL?
 
     private var isToday: Bool { Calendar.current.isDateInToday(selectedDate) }
     private var dayChunks: [TrackChunk] { store.chunks(on: selectedDate) }
     private var dayStays: [Stay] { store.stays(on: selectedDate) }
+    private var onThisDayMemories: [MemoriesEngine.OnThisDayMemory] {
+        MemoriesEngine.onThisDay(date: selectedDate, stays: store.stays)
+    }
+    private var reunionMoment: MemoriesEngine.ReunionMoment? {
+        isToday ? MemoriesEngine.reunion(todayStays: dayStays, allStays: store.stays) : nil
+    }
     private var dayDistance: Double {
         let saved = dayChunks.reduce(0) { $0 + $1.distance }
         let live = isToday ? TrackPoint.distance(of: engine.pendingPoints) : 0
@@ -29,9 +36,12 @@ struct TodayView: View {
                 VStack(spacing: 16) {
                     dateBar
                     mapCard
+                    if let reunion = reunionMoment { reunionCard(reunion) }
                     if isToday { statusCard }
                     metricsRow
+                    if !onThisDayMemories.isEmpty { onThisDaySection }
                     timelineSection
+                    if !dayChunks.isEmpty || !dayStays.isEmpty { shareDaySection }
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 24)
@@ -105,6 +115,9 @@ struct TodayView: View {
             }
             .sheet(item: $editingChunk) { chunk in
                 MoveDetailSheet(chunk: chunk)
+            }
+            .onChange(of: selectedDate) { _ in
+                dayShareCardURL = nil
             }
         }
     }
@@ -436,6 +449,83 @@ struct TodayView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    private func reunionCard(_ reunion: MemoriesEngine.ReunionMoment) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.title2)
+                .foregroundColor(.orange)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("久别重逢 · \(reunion.placeName)")
+                    .font(.subheadline.weight(.semibold))
+                Text("距离上次来到这里已经过去 \(reunion.daysSinceLastVisit) 天（上次：\(Formatters.dayTitle(reunion.lastVisitDate))），这是你的第 \(reunion.totalVisits) 次到访。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+            Spacer()
+        }
+        .padding(14)
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    }
+
+    private var onThisDaySection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("那年今日").font(.headline).padding(.horizontal, 4)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(onThisDayMemories) { mem in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("\(mem.year) 年（\(mem.yearsAgo) 年前）")
+                                .font(.caption2.bold())
+                                .foregroundColor(.orange)
+                            Text(mem.stay.displayName)
+                                .font(.subheadline.weight(.semibold))
+                                .lineLimit(1)
+                            if let sub = mem.stay.subtitle {
+                                Text(sub)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .padding(12)
+                        .frame(width: 170, alignment: .leading)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                }
+            }
+        }
+    }
+
+    private var shareDaySection: some View {
+        Group {
+            if let url = dayShareCardURL {
+                ShareLink(item: url) {
+                    Label("分享今日足迹卡片", systemImage: "square.and.arrow.up")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+            } else {
+                Button {
+                    let cities = dayStays.compactMap(\.city).removingDuplicates()
+                    dayShareCardURL = ShareCardGenerator.renderDayCard(
+                        title: Formatters.dayTitle(selectedDate),
+                        subtitle: Formatters.weekdaySubtitle(selectedDate),
+                        distance: dayDistance,
+                        stayCount: dayStays.count,
+                        cities: cities,
+                        chunks: dayChunks,
+                        privacyZones: store.privacyZones
+                    )
+                } label: {
+                    Label("生成今日足迹分享卡片", systemImage: "photo.artframe")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(.top, 4)
     }
 }
 

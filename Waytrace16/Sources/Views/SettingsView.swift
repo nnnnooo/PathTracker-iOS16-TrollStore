@@ -118,7 +118,7 @@ struct SettingsView: View {
                         showClearConfirm = true
                     }
                 } footer: {
-                    Text("Waytrace iOS 16 · 第 1 批增强版（旅程 / 统计图表 / 里程碑 / GPX 导入 / 隐私区域 / 本地备份）。")
+                    Text("Waytrace iOS 16 · 第 2 批增强版（护照与印章 / 那年今日与重逢 / 分享卡片 / 旅程 / 统计图表 / 本地备份）。")
                 }
             }
             .navigationTitle("设置")
