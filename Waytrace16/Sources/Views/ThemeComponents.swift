@@ -126,11 +126,10 @@ struct PulsingDot: View {
                     .fill(color.opacity(0.4))
                     .scaleEffect(animate ? 2.6 : 1)
                     .opacity(animate ? 0 : 1)
+                    .animation(.easeOut(duration: 1.4).repeatForever(autoreverses: false), value: animate)
             )
             .onAppear {
-                withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) {
-                    animate = true
-                }
+                animate = true
             }
     }
 }
@@ -146,16 +145,25 @@ struct PressableStyle: ButtonStyle {
 /// Top-right avatar button that opens Settings sheet, matching upstream Waytrace.
 struct ProfileToolbarButton: View {
     @Binding var showingSettings: Bool
+    @AppStorage("wt16.profile.name") private var profileName: String = "F"
 
     var body: some View {
         Button {
             showingSettings = true
         } label: {
-            Image(systemName: "person.crop.circle.fill")
-                .resizable()
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Color.accentColor)
+            let initial = String(profileName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased().nilIfEmpty ?? "F"
+            Text(initial)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundColor(.white)
                 .frame(width: 28, height: 28)
+                .background(
+                    LinearGradient(
+                        colors: [Color(red: 0.14, green: 0.62, blue: 1.0), Color.blue],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    in: Circle()
+                )
         }
         .accessibilityLabel("设置")
     }

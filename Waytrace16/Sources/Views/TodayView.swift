@@ -11,7 +11,6 @@ struct TodayView: View {
     @State private var selectedDate = Date()
     @State private var showDatePicker = false
     @State private var showFullScreenMap = false
-    @State private var showPauseMenu = false
     @State private var showNewRecording = false
     @State private var editingStay: Stay?
     @State private var editingChunk: TrackChunk?
@@ -37,7 +36,7 @@ struct TodayView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     if isToday {
-                        statusCard
+                        trackingStatusCard
                         if let reunion = reunionMoment { reunionCard(reunion) }
                         if !onThisDayMemories.isEmpty { onThisDaySection }
                     }
@@ -51,14 +50,23 @@ struct TodayView: View {
                     }
                 }
                 .padding(.horizontal)
-                .padding(.bottom, isToday ? 24 : 72)
+                .padding(.bottom, isToday ? 24 : 76)
             }
             .scrollIndicators(.hidden)
             .background(Color(.systemGroupedBackground))
+            .simultaneousGesture(
+                DragGesture(minimumDistance: 35)
+                    .onEnded { value in
+                        let dx = value.translation.width, dy = value.translation.height
+                        guard abs(dx) > 90, abs(dx) > abs(dy) * 2 else { return }
+                        shift(by: dx > 0 ? -1 : 1)
+                    }
+            )
             .overlay(alignment: .bottom) {
                 if !isToday {
                     Button {
-                        withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
                             selectedDate = Date()
                         }
                     } label: {
@@ -68,51 +76,59 @@ struct TodayView: View {
                             .padding(.vertical, 10)
                             .background(Color.accentColor, in: Capsule())
                             .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.2), radius: 8, y: 4)
+                            .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
                     }
                     .padding(.bottom, 12)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItemGroup(placement: .navigationBarLeading) {
-                    Button {
-                        shift(by: -1)
-                    } label: {
-                        Image(systemName: "chevron.left")
+                ToolbarItem(placement: .navigationBarLeading) {
+                    HStack(spacing: 14) {
+                        Button {
+                            shift(by: -1)
+                        } label: {
+                            Image(systemName: "chevron.left")
+                                .font(.body.weight(.semibold))
+                        }
+                        Button {
+                            shift(by: 1)
+                        } label: {
+                            Image(systemName: "chevron.right")
+                                .font(.body.weight(.semibold))
+                        }
+                        .disabled(isToday)
                     }
-                    Button {
-                        shift(by: 1)
-                    } label: {
-                        Image(systemName: "chevron.right")
-                    }
-                    .disabled(isToday)
                 }
 
                 ToolbarItem(placement: .principal) {
                     VStack(spacing: 0) {
-                        Text(Formatters.dayTitle(selectedDate)).font(.headline)
+                        Text(Formatters.dayTitle(selectedDate))
+                            .font(.headline)
                         Text(Formatters.weekdaySubtitle(selectedDate))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
+                    .fixedSize()
                 }
 
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    if engine.activeTrip == nil {
-                        Button {
-                            showNewRecording = true
-                        } label: {
-                            Image(systemName: "record.circle")
-                                .foregroundColor(.orange)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    HStack(spacing: 12) {
+                        if engine.activeTrip == nil {
+                            Button {
+                                showNewRecording = true
+                            } label: {
+                                Image(systemName: "record.circle")
+                                    .foregroundColor(.orange)
+                            }
                         }
+                        Button {
+                            showDatePicker = true
+                        } label: {
+                            Image(systemName: "calendar")
+                        }
+                        ProfileToolbarButton(showingSettings: $showingSettings)
                     }
-                    Button {
-                        showDatePicker = true
-                    } label: {
-                        Image(systemName: "calendar")
-                    }
-                    ProfileToolbarButton(showingSettings: $showingSettings)
                 }
             }
             .sheet(isPresented: $showDatePicker) {
@@ -148,15 +164,17 @@ struct TodayView: View {
                     Button {
                         showFullScreenMap = false
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.title)
-                            .foregroundStyle(.white, .black.opacity(0.6))
+                        Image(systemName: "xmark")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(.primary)
+                            .frame(width: 38, height: 38)
+                            .background(.ultraThinMaterial, in: Circle())
                             .padding()
                     }
                 }
             }
             .sheet(isPresented: $showNewRecording) { NewRecordingSheet() }
-            .sheet(item: $editingStay) { stay in StayEditSheet(stay: stay) }
+            .sheet(item: $editingStay) { stay in StayDetailSheet(stay: stay) }
             .sheet(item: $editingChunk) { chunk in MoveDetailSheet(chunk: chunk) }
             .onChange(of: selectedDate) { _ in dayShareCardURL = nil }
         }
@@ -165,8 +183,202 @@ struct TodayView: View {
     private func shift(by days: Int) {
         guard let next = Calendar.current.date(byAdding: .day, value: days, to: selectedDate),
               next <= Date() else { return }
-        selectedDate = next
+        UISelectionFeedbackGenerator().selectionChanged()
+        withAnimation(.easeInOut(duration: 0.22)) {
+            selectedDate = next
+        }
     }
+
+    // MARK: - Tracking Status Card (Upstream Capsule & Cards)
+
+    @ViewBuilder
+    private var trackingStatusCard: some View {
+        if let active = engine.activeTrip {
+            HStack(spacing: 12) {
+                PulsingDot(color: .orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(active.coverEmoji) \(active.title)")
+                        .font(.subheadline.weight(.semibold))
+                        .lineLimit(1)
+                    TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                        Text("\(active.activity?.title ?? "记录中") · \(Formatters.duration(ctx.date.timeIntervalSince(active.startDate))) · \(Formatters.distance(dayDistance))")
+                            .font(.footnote.monospacedDigit())
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 8)
+                Button {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    engine.endActiveRecording()
+                } label: {
+                    Label("结束", systemImage: "stop.fill")
+                        .font(.caption.weight(.semibold))
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                .controlSize(.small)
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else if engine.isPaused {
+            HStack(spacing: 12) {
+                Image(systemName: "pause.circle.fill")
+                    .font(.title2)
+                    .foregroundColor(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("已暂停记录").font(.subheadline.weight(.semibold))
+                    Text(engine.isPausedIndefinitely ? "不记录，也不使用定位。想继续时点“继续”。" : "将在 \(engine.pausedUntil.map(Formatters.timeHM) ?? "") 自动恢复。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button("继续") {
+                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    withAnimation { engine.resume() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else if !engine.isEnabled {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 12) {
+                    Image(systemName: "record.circle")
+                        .font(.title2)
+                        .foregroundColor(.orange)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("想记录时再记录").font(.subheadline.weight(.semibold))
+                        Text("现在没有在记录，也不会使用你的位置。").font(.footnote).foregroundColor(.secondary)
+                    }
+                    Spacer()
+                }
+                HStack(spacing: 10) {
+                    Button {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        showNewRecording = true
+                    } label: {
+                        Label("开始记录", systemImage: "record.circle")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.orange)
+
+                    Button("全天自动") {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        if engine.authorization == .notDetermined { engine.requestWhenInUse() }
+                        engine.isEnabled = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else if !engine.hasAlwaysPermission {
+            HStack(spacing: 12) {
+                Image(systemName: engine.hasAnyPermission ? "location.circle.fill" : "location.slash.fill")
+                    .font(.title2)
+                    .foregroundColor(engine.hasAnyPermission ? .yellow : .red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(engine.hasAnyPermission ? "仅在使用时记录" : "需要位置权限")
+                        .font(.subheadline.weight(.semibold))
+                    Text(engine.hasAnyPermission ? "建议在位置权限中选「始终」，锁屏也能自动记录。" : "允许后才能记录每日足迹。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+                Spacer(minLength: 8)
+                Button(engine.hasAnyPermission ? "更改" : "允许") {
+                    if engine.authorization == .notDetermined { engine.requestWhenInUse() }
+                    else { engine.requestAlways() }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        } else {
+            // Upstream compact recording capsule with inline mode badge
+            HStack(spacing: 8) {
+                PulsingDot(color: .green)
+                Text(engine.activity == .moving ? "正在记录 · 移动中" : "正在记录")
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                Menu {
+                    Section("记录模式") {
+                        ForEach(LocationEngine.Precision.allCases) { mode in
+                            Button {
+                                UISelectionFeedbackGenerator().selectionChanged()
+                                engine.precision = mode
+                            } label: {
+                                if engine.precision == mode {
+                                    Label(mode.title, systemImage: "checkmark")
+                                } else {
+                                    Text(mode.title)
+                                }
+                            }
+                        }
+                    }
+                } label: {
+                    Text(engine.precision.title)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(Color(.tertiarySystemFill), in: Capsule())
+                        .lineLimit(1)
+                }
+                GPSSignalBadge(location: engine.currentLocation)
+                Spacer(minLength: 4)
+                if tagger.isTagging {
+                    Text(tagger.progressText ?? "识别地点(\(tagger.pendingCount))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                } else if let stay = engine.openStay {
+                    Label(stay.displayName, systemImage: "mappin.circle.fill")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Menu {
+                    Section("暂停记录") {
+                        Button("暂停，直到我继续") {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            engine.pause(until: nil)
+                        }
+                        Button("暂停 1 小时") {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            engine.pause(until: Date().addingTimeInterval(3600))
+                        }
+                        Button("暂停 3 小时") {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            engine.pause(until: Date().addingTimeInterval(3 * 3600))
+                        }
+                        Button("暂停到明天早上") {
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            let cal = Calendar.current
+                            let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date()))!
+                            engine.pause(until: tomorrow.addingTimeInterval(7 * 3600))
+                        }
+                    }
+                } label: {
+                    Image(systemName: "pause.circle")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                        .frame(width: 30, height: 30)
+                }
+            }
+            .padding(.leading, 16)
+            .padding(.trailing, 8)
+            .padding(.vertical, 8)
+            .background(Color(.secondarySystemGroupedBackground), in: Capsule())
+        }
+    }
+
+    // MARK: - Map Card
 
     private var mapCard: some View {
         Button {
@@ -190,6 +402,7 @@ struct TodayView: View {
                 } else {
                     Label("查看地图", systemImage: "arrow.up.left.and.arrow.down.right")
                         .font(.footnote.weight(.semibold))
+                        .foregroundColor(.primary)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .background(.ultraThinMaterial, in: Capsule())
@@ -202,79 +415,11 @@ struct TodayView: View {
         .buttonStyle(PressableStyle())
     }
 
-    private var statusCard: some View {
-        WaytraceCard(padding: 14, cornerRadius: 22) {
-            HStack(spacing: 12) {
-                if engine.isRecording && engine.hasAnyPermission {
-                    PulsingDot(color: statusColor)
-                } else {
-                    Circle().fill(statusColor).frame(width: 8, height: 8)
-                }
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(statusHeadline).font(.subheadline.weight(.semibold))
-                    Text(statusDetail).font(.caption).foregroundColor(.secondary)
-                }
-                Spacer()
-                if engine.activeTrip != nil {
-                    Button("结束") { engine.endActiveRecording() }
-                        .buttonStyle(.borderedProminent).tint(.red).controlSize(.small)
-                } else if !engine.hasAlwaysPermission {
-                    Button("始终定位") {
-                        if engine.authorization == .notDetermined { engine.requestWhenInUse() }
-                        else { engine.requestAlways() }
-                    }
-                    .buttonStyle(.borderedProminent).controlSize(.small)
-                } else if !engine.isEnabled {
-                    Button("开启") { engine.isEnabled = true }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                } else if engine.isPaused {
-                    Button("恢复") { engine.resume() }
-                        .buttonStyle(.borderedProminent).controlSize(.small)
-                } else {
-                    Button("暂停") { showPauseMenu = true }
-                        .buttonStyle(.bordered).controlSize(.small)
-                }
-            }
-        }
-        .confirmationDialog("暂停全天记录", isPresented: $showPauseMenu, titleVisibility: .visible) {
-            Button("暂停 1 小时") { engine.pause(until: Date().addingTimeInterval(3600)) }
-            Button("暂停 3 小时") { engine.pause(until: Date().addingTimeInterval(3 * 3600)) }
-            Button("暂停到明天早上 8:00") {
-                let cal = Calendar.current
-                let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date()))!
-                engine.pause(until: tomorrow.addingTimeInterval(8 * 3600))
-            }
-            Button("一直暂停直到手动恢复") { engine.pause(until: nil) }
-            Button("取消", role: .cancel) {}
-        }
-    }
-
-    private var statusColor: Color {
-        if engine.activeTrip != nil { return .red }
-        if !engine.hasAnyPermission { return .red }
-        if !engine.isEnabled || engine.isPaused { return .gray }
-        return engine.activity == .moving ? .green : .blue
-    }
-
-    private var statusHeadline: String {
-        if let active = engine.activeTrip { return "正在记录：\(active.title)" }
-        if engine.isPaused {
-            if engine.isPausedIndefinitely { return "已暂停记录" }
-            if let until = engine.pausedUntil { return "已暂停至 \(Formatters.timeHM(until))" }
-        }
-        if let stay = engine.openStay, engine.isRecording { return "停留在 \(stay.displayName)" }
-        return engine.activity.title
-    }
-
-    private var statusDetail: String {
-        if engine.activeTrip != nil { return "手动高精度记录中" }
-        if !engine.hasAlwaysPermission { return "需要「始终允许」定位权限以全天后台记录" }
-        return "模式：\(engine.precision.title)" + (tagger.isTagging ? " · \(tagger.progressText ?? "识别地点中(\(tagger.pendingCount))")" : "")
-    }
+    // MARK: - 3-Column Metrics Bar
 
     private var metricsBar: some View {
         HStack(spacing: 0) {
-            dayFigure(value: Formatters.distance(dayDistance), label: "移动", symbol: "point.topright.arrow.triangle.backward.to.point.bottomleft.scurvepath", tint: .blue)
+            dayFigure(value: Formatters.distance(dayDistance), label: "移动", symbol: "point.topleft.down.curvedto.point.bottomright.up", tint: .blue)
             Divider().frame(height: 34)
             dayFigure(value: "\(dayStays.count)", label: "个地点", symbol: "mappin.and.ellipse", tint: .pink)
             Divider().frame(height: 34)
@@ -287,7 +432,7 @@ struct TodayView: View {
     private func dayFigure(value: String, label: String, symbol: String, tint: Color) -> some View {
         VStack(spacing: 3) {
             Text(value)
-                .font(.system(.title3, design: .rounded, weight: .bold))
+                .font(.system(.title3, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .lineLimit(1)
                 .minimumScaleFactor(0.7)
@@ -299,6 +444,8 @@ struct TodayView: View {
         }
         .frame(maxWidth: .infinity)
     }
+
+    // MARK: - Upstream Rail Timeline
 
     private enum TimelineEntry: Identifiable {
         case stay(Stay)
@@ -326,13 +473,15 @@ struct TodayView: View {
     }
 
     private var timelineSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let entries = timelineEntries
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text("时间线").font(.title3.bold())
                 Spacer()
-                if !timelineEntries.isEmpty {
+                if !entries.isEmpty {
                     Button {
-                        withAnimation { newestFirst.toggle() }
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        withAnimation(.easeInOut(duration: 0.25)) { newestFirst.toggle() }
                     } label: {
                         Label(newestFirst ? "最新在前" : "最早在前", systemImage: "arrow.up.arrow.down")
                             .font(.subheadline)
@@ -343,7 +492,7 @@ struct TodayView: View {
             .padding(.horizontal, 4)
             .padding(.top, 4)
 
-            if timelineEntries.isEmpty {
+            if entries.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "figure.walk.departure")
                         .font(.largeTitle)
@@ -359,15 +508,34 @@ struct TodayView: View {
                 .padding(.vertical, 32)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
             } else {
-                VStack(spacing: 10) {
-                    ForEach(timelineEntries) { entry in
+                VStack(spacing: 0) {
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        let isFirst = index == 0
+                        let isLast = index == entries.count - 1
                         switch entry {
                         case .stay(let stay):
-                            Button { editingStay = stay } label: { stayRow(stay) }
-                                .buttonStyle(.plain)
+                            if index > 0, case .stay = entries[index - 1] {
+                                HStack(spacing: 0) {
+                                    Color.clear.frame(width: 48)
+                                    TimelineRailLine(dashed: true)
+                                    Spacer()
+                                }
+                                .frame(height: 12)
+                            }
+                            TimelineStayRow(
+                                stay: stay,
+                                day: selectedDate,
+                                isFirst: isFirst,
+                                isLast: isLast,
+                                isPrivate: store.isCoordinatePrivate(stay.coordinate)
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture { editingStay = stay }
                         case .move(let chunk):
-                            Button { editingChunk = chunk } label: { moveRow(chunk) }
-                                .buttonStyle(.plain)
+                            Button { editingChunk = chunk } label: {
+                                TimelineMoveRow(chunk: chunk, isFirst: isFirst, isLast: isLast)
+                            }
+                            .buttonStyle(PressableStyle())
                         }
                     }
                 }
@@ -375,94 +543,7 @@ struct TodayView: View {
         }
     }
 
-    private func stayRow(_ stay: Stay) -> some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .trailing, spacing: 2) {
-                Text(Formatters.timeHM(stay.arrival))
-                    .font(.caption.monospacedDigit().weight(.medium))
-                if let dep = stay.departure {
-                    Text(Formatters.timeHM(dep))
-                        .font(.caption2.monospacedDigit())
-                        .foregroundColor(.secondary)
-                } else {
-                    Text("现在")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(.blue)
-                }
-            }
-            .frame(width: 44, alignment: .trailing)
-
-            PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 36)
-
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Text(stay.displayName)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    if stay.isFromPhotos {
-                        Text("相册")
-                            .font(.caption2)
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
-                            .background(Color.orange.opacity(0.18), in: Capsule())
-                            .foregroundColor(.orange)
-                    }
-                    if store.isCoordinatePrivate(stay.coordinate) {
-                        Image(systemName: "eye.slash.fill")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                    }
-                }
-                HStack(spacing: 6) {
-                    Text(Formatters.duration(stay.duration))
-                    if let sub = stay.subtitle { Text("· \(sub)") }
-                }
-                .font(.caption)
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-
-                if let note = stay.note, !note.isEmpty {
-                    Text(note)
-                        .font(.caption)
-                        .foregroundColor(.primary.opacity(0.85))
-                        .lineLimit(2)
-                        .padding(.top, 2)
-                }
-            }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundColor(.secondary.opacity(0.5))
-        }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
-    }
-
-    private func moveRow(_ chunk: TrackChunk) -> some View {
-        HStack(spacing: 12) {
-            Text(Formatters.timeHM(chunk.startDate))
-                .font(.caption2.monospacedDigit())
-                .foregroundColor(.secondary)
-                .frame(width: 44, alignment: .trailing)
-
-            Image(systemName: chunk.mode.symbol)
-                .font(.caption)
-                .foregroundColor(chunk.mode.color)
-                .frame(width: 36)
-
-            Text("\(chunk.mode.title) · \(Formatters.distance(chunk.distance)) · \(Formatters.duration(chunk.duration))")
-                .font(.caption)
-                .foregroundColor(.secondary)
-
-            Spacer()
-
-            Image(systemName: "chevron.right")
-                .font(.caption2)
-                .foregroundColor(.secondary.opacity(0.5))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-    }
+    // MARK: - Reunion & On This Day & Share
 
     private func reunionCard(_ reunion: MemoriesEngine.ReunionMoment) -> some View {
         HStack(spacing: 12) {
@@ -488,23 +569,7 @@ struct TodayView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 10) {
                     ForEach(onThisDayMemories) { mem in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("\(mem.year) 年（\(mem.yearsAgo) 年前）")
-                                .font(.caption2.bold())
-                                .foregroundColor(.orange)
-                            Text(mem.stay.displayName)
-                                .font(.subheadline.weight(.semibold))
-                                .lineLimit(1)
-                            if let sub = mem.stay.subtitle {
-                                Text(sub)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                            }
-                        }
-                        .padding(14)
-                        .frame(width: 170, alignment: .leading)
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        OnThisDayMemoryCard(memory: mem)
                     }
                 }
             }
@@ -541,6 +606,265 @@ struct TodayView: View {
         .padding(.top, 4)
     }
 }
+
+// MARK: - Upstream Timeline Rail Subviews
+
+private struct TimelineRailLine: View {
+    var color: Color = Color.secondary.opacity(0.22)
+    var width: CGFloat = 2
+    var dashed: Bool = false
+    var fadesIn: Bool = false
+    var fadesOut: Bool = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            Path {
+                $0.move(to: CGPoint(x: proxy.size.width / 2, y: 0))
+                $0.addLine(to: CGPoint(x: proxy.size.width / 2, y: proxy.size.height))
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: width, lineCap: .round, dash: dashed ? [2, 5] : []))
+            .mask {
+                LinearGradient(
+                    stops: [
+                        .init(color: fadesIn ? .clear : .black, location: 0),
+                        .init(color: .black, location: fadesIn ? 0.35 : 0),
+                        .init(color: .black, location: fadesOut ? 0.65 : 1),
+                        .init(color: fadesOut ? .clear : .black, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+        .frame(width: 34)
+    }
+}
+
+private struct TimelineStayRow: View {
+    let stay: Stay
+    let day: Date
+    let isFirst: Bool
+    let isLast: Bool
+    let isPrivate: Bool
+
+    @State private var photos: [PhotoPreviewItem] = []
+    private var isHere: Bool { stay.departure == nil }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 0) {
+            // Left margin 24h times
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(Formatters.timeHM(stay.arrival))
+                    .font(.subheadline.weight(.semibold))
+                if let dep = stay.departure {
+                    Text(Formatters.timeHM(dep))
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .padding(.top, 2)
+                }
+            }
+            .monospacedDigit()
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
+            .frame(width: 48, alignment: .trailing)
+            .padding(.top, 13)
+
+            // Center rail + node
+            ZStack(alignment: .top) {
+                TimelineRailLine(fadesIn: isFirst, fadesOut: isLast && !isHere)
+                PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 26)
+                    .padding(3)
+                    .background(Circle().fill(Color(.systemGroupedBackground)))
+                    .overlay {
+                        if isHere { TimelineNowRing(color: stay.category.tint) }
+                    }
+                    .overlay(alignment: .bottomTrailing) {
+                        if stay.isFromPhotos {
+                            Image(systemName: "photo.fill")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 14, height: 14)
+                                .background(Circle().fill(Color.pink))
+                                .overlay(Circle().stroke(Color(.systemGroupedBackground), lineWidth: 1.5))
+                                .offset(x: 2, y: 2)
+                        }
+                    }
+                    .padding(.top, 11)
+            }
+
+            // Right card
+            VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text(stay.displayName)
+                            .font(.headline)
+                            .lineLimit(1)
+                        if stay.isLandmark {
+                            Image(systemName: "star.fill").font(.caption2).foregroundColor(.yellow)
+                        }
+                        if isPrivate {
+                            Image(systemName: "eye.slash.fill").font(.caption2).foregroundColor(.secondary)
+                        }
+                        Spacer(minLength: 4)
+                        if isHere {
+                            HStack(spacing: 5) {
+                                PulsingDot(color: stay.category.tint)
+                                Text("现在").font(.caption.weight(.semibold))
+                            }
+                            .foregroundColor(stay.category.tint)
+                        }
+                    }
+                    Text(detailText)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+                if let note = stay.note, !note.isEmpty {
+                    Text(note)
+                        .font(.subheadline)
+                        .foregroundColor(.primary.opacity(0.85))
+                        .lineLimit(4)
+                }
+                if !photos.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(photos.enumerated()), id: \.element.id) { idx, item in
+                                Image(uiImage: item.thumbnail)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 68, height: 68)
+                                    .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+                                    .onTapGesture {
+                                        PhotoLightboxPresenter.present(items: photos, startIndex: idx)
+                                    }
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color(.secondarySystemGroupedBackground))
+                    .overlay {
+                        if isHere {
+                            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                                .stroke(stay.category.tint.opacity(0.35), lineWidth: 1)
+                        }
+                    }
+            )
+            .padding(.bottom, 10)
+        }
+        .task(id: stay.id) {
+            photos = await StintPhotoFetcher.shared.stayPhotoItems(for: stay)
+        }
+    }
+
+    private var detailText: String {
+        if stay.tagState == .pending { return "正在识别地点…" }
+        let length = isHere ? "已停留 \(Formatters.duration(stay.duration))" : Formatters.duration(stay.duration)
+        return [stay.city, length].compactMap { $0 }.joined(separator: " · ")
+    }
+}
+
+private struct TimelineMoveRow: View {
+    let chunk: TrackChunk
+    let isFirst: Bool
+    let isLast: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Color.clear.frame(width: 48)
+            TimelineRailLine(
+                color: chunk.mode.color.opacity(0.75),
+                width: 3,
+                dashed: chunk.mode == .subway,
+                fadesIn: isFirst,
+                fadesOut: isLast
+            )
+            HStack(spacing: 8) {
+                Image(systemName: chunk.mode.symbol)
+                    .font(.caption.weight(.bold))
+                    .foregroundColor(chunk.mode.color)
+                    .frame(width: 24, height: 24)
+                    .background(chunk.mode.color.opacity(0.14), in: Circle())
+                Text(chunk.mode.title)
+                    .font(.footnote.weight(.semibold))
+                    .foregroundColor(.primary)
+                Text("\(Formatters.distance(chunk.distance)) · \(Formatters.duration(chunk.duration))")
+                    .font(.footnote.monospacedDigit())
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Spacer(minLength: 6)
+                MiniRouteSketchView(points: chunk.points, tint: chunk.mode.color)
+                    .frame(width: 58, height: 34)
+                Image(systemName: "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundColor(Color(.tertiaryLabel))
+            }
+            .padding(.leading, 6)
+            .padding(.trailing, 14)
+            .padding(.vertical, 10)
+        }
+        .frame(minHeight: 52)
+    }
+}
+
+private struct MiniRouteSketchView: View {
+    let points: [TrackPoint]
+    let tint: Color
+
+    var body: some View {
+        Canvas { context, size in
+            guard points.count >= 2 else { return }
+            let step = max(1, points.count / 40)
+            let sampled = stride(from: 0, to: points.count, by: step).map { points[$0] }
+            let lats = sampled.map(\.latitude), lons = sampled.map(\.longitude)
+            guard let minLat = lats.min(), let maxLat = lats.max(),
+                  let minLon = lons.min(), let maxLon = lons.max() else { return }
+            let spanLat = max(maxLat - minLat, 0.0005)
+            let spanLon = max(maxLon - minLon, 0.0005)
+            let pad: CGFloat = 5
+            let w = size.width - pad * 2, h = size.height - pad * 2
+            let mapped = sampled.map { pt -> CGPoint in
+                let x = pad + CGFloat((pt.longitude - minLon) / spanLon) * w
+                let y = pad + CGFloat(1.0 - (pt.latitude - minLat) / spanLat) * h
+                return CGPoint(x: x, y: y)
+            }
+            var path = Path()
+            path.addLines(mapped)
+            context.stroke(path, with: .color(tint), style: StrokeStyle(lineWidth: 2.2, lineCap: .round, lineJoin: .round))
+            if let first = mapped.first {
+                context.fill(Path(ellipseIn: CGRect(x: first.x - 2.5, y: first.y - 2.5, width: 5, height: 5)), with: .color(.white))
+                context.stroke(Path(ellipseIn: CGRect(x: first.x - 2.5, y: first.y - 2.5, width: 5, height: 5)), with: .color(tint), lineWidth: 1.5)
+            }
+            if let last = mapped.last {
+                context.fill(Path(ellipseIn: CGRect(x: last.x - 2.5, y: last.y - 2.5, width: 5, height: 5)), with: .color(tint))
+            }
+        }
+        .background(tint.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+private struct TimelineNowRing: View {
+    let color: Color
+    @State private var breathe = false
+
+    var body: some View {
+        Circle()
+            .stroke(color.opacity(breathe ? 0 : 0.55), lineWidth: 2)
+            .scaleEffect(breathe ? 1.45 : 1)
+            .animation(.easeOut(duration: 1.8).repeatForever(autoreverses: false), value: breathe)
+            .onAppear {
+                breathe = true
+            }
+            .allowsHitTesting(false)
+    }
+}
+
+// MARK: - Detail Sheets (Move & Stay)
 
 private struct MoveDetailSheet: View {
     @EnvironmentObject private var store: DataStore
@@ -610,94 +934,4 @@ private struct MoveDetailSheet: View {
     }
 }
 
-private struct StayEditSheet: View {
-    @EnvironmentObject private var store: DataStore
-    @Environment(\.dismiss) private var dismiss
 
-    let stay: Stay
-    @State private var name: String
-    @State private var note: String
-    @State private var selectedCategory: String
-    @State private var isPrivateZone: Bool
-    @State private var showDeleteConfirm = false
-
-    private let quickCategories: [(id: String, label: String)] = [
-        ("auto", "自动"),
-        ("home", "家"),
-        ("work", "公司"),
-        ("school", "学校"),
-        ("restaurant", "餐厅"),
-        ("mall", "商场"),
-        ("sight", "景点"),
-    ]
-
-    init(stay: Stay) {
-        self.stay = stay
-        _name = State(initialValue: stay.customName ?? stay.placeName ?? "")
-        _note = State(initialValue: stay.note ?? "")
-        _selectedCategory = State(initialValue: stay.categoryRaw ?? "auto")
-        _isPrivateZone = State(initialValue: false)
-    }
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("地点信息") {
-                    TextField("自定义名称（如 家、公司）", text: $name)
-                    Picker("类型", selection: $selectedCategory) {
-                        ForEach(quickCategories, id: \.id) { item in
-                            Text(item.label).tag(item.id)
-                        }
-                    }
-                    TextField("写点备注或当时的心情…", text: $note, axis: .vertical)
-                        .lineLimit(2...4)
-                }
-
-                Section {
-                    Toggle("导出时隐藏此地周围 300 米", isOn: $isPrivateZone)
-                } footer: {
-                    Text("开启后导出 GPX 轨迹时会自动过滤该范围，你自己查看不受影响。")
-                }
-
-                Section("详情") {
-                    LabeledContent("到达", value: Formatters.timeHM(stay.arrival))
-                    LabeledContent("离开", value: stay.departure.map(Formatters.timeHM) ?? "停留中")
-                    LabeledContent("时长", value: Formatters.duration(stay.duration))
-                    if let sub = stay.subtitle { LabeledContent("区域", value: sub) }
-                    if let street = stay.street { LabeledContent("街道", value: street) }
-                }
-
-                Section {
-                    Button("删除此条停留记录", role: .destructive) { showDeleteConfirm = true }
-                }
-            }
-            .navigationTitle("停留详情")
-            .navigationBarTitleDisplayMode(.inline)
-            .onAppear { isPrivateZone = store.isCoordinatePrivate(stay.coordinate) }
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        let cat: String? = selectedCategory == "auto" ? nil : selectedCategory
-                        store.renameNearby(stay, to: name, categoryRaw: cat, note: note)
-                        let existingZone = store.privacyZone(containing: stay.coordinate)
-                        if isPrivateZone && existingZone == nil {
-                            let zoneName = name.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? stay.displayName
-                            store.upsertPrivacyZone(PrivacyZone(name: zoneName, latitude: stay.latitude, longitude: stay.longitude, radius: 300))
-                        } else if !isPrivateZone, let zone = existingZone {
-                            store.deletePrivacyZone(id: zone.id)
-                        }
-                        dismiss()
-                    }
-                }
-            }
-            .confirmationDialog("确定删除这条停留记录吗？", isPresented: $showDeleteConfirm, titleVisibility: .visible) {
-                Button("删除", role: .destructive) {
-                    store.deleteStay(id: stay.id)
-                    dismiss()
-                }
-                Button("取消", role: .cancel) {}
-            }
-        }
-    }
-}

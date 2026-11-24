@@ -7,6 +7,7 @@ struct Waytrace16App: App {
     @StateObject private var store: DataStore
     @StateObject private var tagger: PlaceTagger
     @StateObject private var engine: LocationEngine
+    @StateObject private var chinaStore = ChinaRegionsStore.shared
 
     init() {
         let store = DataStore()
@@ -23,6 +24,7 @@ struct Waytrace16App: App {
                 .environmentObject(store)
                 .environmentObject(tagger)
                 .environmentObject(engine)
+                .environmentObject(chinaStore)
                 .onAppear {
                     tagger.enqueue()
                 }

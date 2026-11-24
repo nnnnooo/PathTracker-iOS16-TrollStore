@@ -193,6 +193,43 @@ final class DataStore: ObservableObject {
         }
     }
 
+    func insertChunksBatch(_ newChunks: [TrackChunk]) {
+        guard let db, !newChunks.isEmpty else { return }
+        let sql = """
+        INSERT OR REPLACE INTO track_chunks
+        (id, start_date, end_date, distance, point_count, min_lat, max_lat, min_lon, max_lon, mode_raw, trip_id, points_data)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+        """
+        execute("BEGIN TRANSACTION;")
+        var stmt: OpaquePointer?
+        if sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK {
+            for chunk in newChunks {
+                sqlite3_reset(stmt)
+                bindText(stmt, 1, chunk.id.uuidString)
+                sqlite3_bind_double(stmt, 2, chunk.startDate.timeIntervalSince1970)
+                sqlite3_bind_double(stmt, 3, chunk.endDate.timeIntervalSince1970)
+                sqlite3_bind_double(stmt, 4, chunk.distance)
+                sqlite3_bind_int(stmt, 5, Int32(chunk.pointCount))
+                sqlite3_bind_double(stmt, 6, chunk.minLatitude)
+                sqlite3_bind_double(stmt, 7, chunk.maxLatitude)
+                sqlite3_bind_double(stmt, 8, chunk.minLongitude)
+                sqlite3_bind_double(stmt, 9, chunk.maxLongitude)
+                bindText(stmt, 10, chunk.modeRaw)
+                bindOptionalText(stmt, 11, chunk.tripID?.uuidString)
+                _ = chunk.pointsData.withUnsafeBytes { raw in
+                    sqlite3_bind_blob(stmt, 12, raw.baseAddress, Int32(chunk.pointsData.count), SQLITE_TRANSIENT)
+                }
+                sqlite3_step(stmt)
+            }
+            sqlite3_finalize(stmt)
+        }
+        execute("COMMIT;")
+
+        var map = Dictionary(uniqueKeysWithValues: chunks.map { ($0.id, $0) })
+        for chunk in newChunks { map[chunk.id] = chunk }
+        chunks = map.values.sorted { $0.startDate < $1.startDate }
+    }
+
     func updateChunkMode(id: UUID, mode: MovementMode) {
         guard var chunk = chunks.first(where: { $0.id == id }) else { return }
         chunk.modeRaw = mode.rawValue
@@ -258,6 +295,9 @@ final class DataStore: ObservableObject {
 
     func deleteStays(ids: Set<UUID>) {
         guard let db, !ids.isEmpty else { return }
+        for existing in stays where ids.contains(existing.id) && existing.isFromPhotos {
+            DeletedPhotoVisits.remember(existing)
+        }
         execute("BEGIN TRANSACTION;")
         var stmt: OpaquePointer?
         if sqlite3_prepare_v2(db, "DELETE FROM stays WHERE id = ?;", -1, &stmt, nil) == SQLITE_OK {

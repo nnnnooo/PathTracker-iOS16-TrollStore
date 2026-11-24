@@ -27,11 +27,14 @@ jobs:
           xcodebuild -version
           xcodebuild -showsdks
 
-      - name: Prepare App Icon from Upstream Assets
+      - name: Prepare App Icon & Country Borders from Upstream Assets
         run: |
           mkdir -p Resources/Assets.xcassets/AppIcon.appiconset
           if [ -f ../RecordPath/Assets.xcassets/AppIcon.appiconset/AppIcon-light.png ]; then
             cp ../RecordPath/Assets.xcassets/AppIcon.appiconset/AppIcon-light.png Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
+          fi
+          if [ -f ../RecordPath/Resources/CountryBorders.json ]; then
+            cp ../RecordPath/Resources/CountryBorders.json Resources/CountryBorders.json
           fi
 
       - name: Install XcodeGen

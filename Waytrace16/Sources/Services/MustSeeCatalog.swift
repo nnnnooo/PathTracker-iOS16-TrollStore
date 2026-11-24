@@ -1,5 +1,6 @@
 import Foundation
 import CoreLocation
+import UIKit
 
 struct MustSeePlace: Identifiable, Hashable, Sendable {
     enum Kind: String, CaseIterable, Sendable {
@@ -47,10 +48,18 @@ final class MustSeeUserStore: ObservableObject {
 
     @Published private(set) var wishIDs: Set<String>
     @Published private(set) var manualVisits: [String: Date]
+    @Published private(set) var excludedAutoIDs: Set<String>
+    @Published private(set) var customCoverIDs: Set<String>
+    @Published private(set) var revision: Int = 0
+    @Published private(set) var coverRevision: Int = 0
+
+    private let coversDir: URL
+    private var coverCache: [String: UIImage] = [:]
 
     private enum Keys {
         static let wish = "wt16.mustsee.wish"
         static let manual = "wt16.mustsee.manual"
+        static let excluded = "wt16.mustsee.excluded"
     }
 
     private init() {
@@ -58,6 +67,16 @@ final class MustSeeUserStore: ObservableObject {
         self.wishIDs = Set(savedWish)
         let savedManual = UserDefaults.standard.dictionary(forKey: Keys.manual) as? [String: Double] ?? [:]
         self.manualVisits = savedManual.mapValues { Date(timeIntervalSince1970: $0) }
+        let savedExcluded = UserDefaults.standard.stringArray(forKey: Keys.excluded) ?? []
+        self.excludedAutoIDs = Set(savedExcluded)
+
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let dir = appSupport.appendingPathComponent("Waytrace16/MustSeeCovers", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        self.coversDir = dir
+
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        self.customCoverIDs = Set(files.filter { $0.hasSuffix(".jpg") }.map { String($0.dropLast(4)) })
     }
 
     func toggleWish(_ placeID: String) {
@@ -67,12 +86,14 @@ final class MustSeeUserStore: ObservableObject {
             wishIDs.insert(placeID)
         }
         UserDefaults.standard.set(Array(wishIDs), forKey: Keys.wish)
+        revision &+= 1
     }
 
     func addWish(_ placeID: String) {
         guard !wishIDs.contains(placeID) else { return }
         wishIDs.insert(placeID)
         UserDefaults.standard.set(Array(wishIDs), forKey: Keys.wish)
+        revision &+= 1
     }
 
     func toggleManualVisit(_ placeID: String, date: Date = Date()) {
@@ -80,9 +101,74 @@ final class MustSeeUserStore: ObservableObject {
             manualVisits.removeValue(forKey: placeID)
         } else {
             manualVisits[placeID] = date
+            if excludedAutoIDs.remove(placeID) != nil {
+                UserDefaults.standard.set(Array(excludedAutoIDs), forKey: Keys.excluded)
+            }
         }
         let raw = manualVisits.mapValues { $0.timeIntervalSince1970 }
         UserDefaults.standard.set(raw, forKey: Keys.manual)
+        revision &+= 1
+    }
+
+    /// Ignore a false-positive auto-detection (e.g. visited Tiananmen Square and auto-matched Forbidden City).
+    func markAsNotVisited(_ placeID: String) {
+        if manualVisits.removeValue(forKey: placeID) != nil {
+            let raw = manualVisits.mapValues { $0.timeIntervalSince1970 }
+            UserDefaults.standard.set(raw, forKey: Keys.manual)
+        }
+        excludedAutoIDs.insert(placeID)
+        UserDefaults.standard.set(Array(excludedAutoIDs), forKey: Keys.excluded)
+        revision &+= 1
+    }
+
+    func restoreAutoVisit(_ placeID: String) {
+        guard excludedAutoIDs.remove(placeID) != nil else { return }
+        UserDefaults.standard.set(Array(excludedAutoIDs), forKey: Keys.excluded)
+        revision &+= 1
+    }
+
+    // MARK: - Custom Cover Photo
+
+    private func coverURL(for placeID: String) -> URL {
+        coversDir.appendingPathComponent("\(placeID).jpg")
+    }
+
+    func customCoverImage(for placeID: String) -> UIImage? {
+        guard customCoverIDs.contains(placeID) else { return nil }
+        if let cached = coverCache[placeID] { return cached }
+        let url = coverURL(for: placeID)
+        guard let data = try? Data(contentsOf: url), let img = UIImage(data: data) else { return nil }
+        if coverCache.count > 60 { coverCache.removeAll() }
+        coverCache[placeID] = img
+        return img
+    }
+
+    func saveCustomCover(_ rawData: Data, for placeID: String) {
+        guard let original = UIImage(data: rawData) else { return }
+        let maxSide: CGFloat = 1200
+        let size = original.size
+        let scale = min(1.0, maxSide / max(size.width, size.height))
+        let rendered: UIImage
+        if scale < 1.0 {
+            let targetSize = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+            rendered = UIGraphicsImageRenderer(size: targetSize).image { _ in
+                original.draw(in: CGRect(origin: .zero, size: targetSize))
+            }
+        } else {
+            rendered = original
+        }
+        guard let jpeg = rendered.jpegData(compressionQuality: 0.85) else { return }
+        try? jpeg.write(to: coverURL(for: placeID), options: .atomic)
+        coverCache[placeID] = rendered
+        customCoverIDs.insert(placeID)
+        coverRevision &+= 1
+    }
+
+    func removeCustomCover(for placeID: String) {
+        try? FileManager.default.removeItem(at: coverURL(for: placeID))
+        coverCache.removeValue(forKey: placeID)
+        customCoverIDs.remove(placeID)
+        coverRevision &+= 1
     }
 }
 
@@ -96,32 +182,39 @@ enum MustSee {
 
     static var allPlaces: [MustSeePlace] { china + world }
 
-    static func visitedMap(places: [MustSeePlace], stays: [Stay], manual: [String: Date]) -> [String: Date] {
+    static func visitedMap(
+        places: [MustSeePlace],
+        stays: [Stay],
+        manual: [String: Date],
+        excluded: Set<String> = []
+    ) -> [String: Date] {
         let byLatitude = stays.sorted { $0.latitude < $1.latitude }
         var result: [String: Date] = [:]
 
         for place in places {
             var earliest = manual[place.id]
 
-            if let code = place.countryCode {
-                if let first = stays.filter({ $0.countryCode == code }).map(\.arrival).min() {
-                    earliest = earliest.map { min($0, first) } ?? first
-                }
-            } else {
-                let center = place.location
-                let span = place.radius / 111.0
-                var low = 0, high = byLatitude.count
-                while low < high {
-                    let mid = (low + high) / 2
-                    if byLatitude[mid].latitude < place.latitude - span { low = mid + 1 } else { high = mid }
-                }
-                var i = low
-                while i < byLatitude.count, byLatitude[i].latitude <= place.latitude + span {
-                    let stay = byLatitude[i]
-                    if stay.location.distance(from: center) <= place.radius * 1000.0 {
-                        earliest = earliest.map { min($0, stay.arrival) } ?? stay.arrival
+            if !excluded.contains(place.id) {
+                if let code = place.countryCode {
+                    if let first = stays.filter({ $0.countryCode == code }).map(\.arrival).min() {
+                        earliest = earliest.map { min($0, first) } ?? first
                     }
-                    i += 1
+                } else {
+                    let center = place.location
+                    let span = place.radius / 111.0
+                    var low = 0, high = byLatitude.count
+                    while low < high {
+                        let mid = (low + high) / 2
+                        if byLatitude[mid].latitude < place.latitude - span { low = mid + 1 } else { high = mid }
+                    }
+                    var i = low
+                    while i < byLatitude.count, byLatitude[i].latitude <= place.latitude + span {
+                        let stay = byLatitude[i]
+                        if stay.location.distance(from: center) <= place.radius * 1000.0 {
+                            earliest = earliest.map { min($0, stay.arrival) } ?? stay.arrival
+                        }
+                        i += 1
+                    }
                 }
             }
 

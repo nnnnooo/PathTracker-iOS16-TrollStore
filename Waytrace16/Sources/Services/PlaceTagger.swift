@@ -36,7 +36,9 @@ final class PlaceTagger: ObservableObject {
     }
 
     func retryFailed() {
-        let failed = store.stays.filter { $0.tagState == .failed }.map { stay -> Stay in
+        let failed = store.stays.filter {
+            $0.tagState == .failed || $0.countryCode == nil || ($0.city == nil && $0.placeName == nil)
+        }.map { stay -> Stay in
             var copy = stay
             copy.tagState = .pending
             return copy
@@ -47,6 +49,48 @@ final class PlaceTagger: ObservableObject {
     }
 
     private func processPending() async {
+        // 0. Instant offline recovery for ANY stay missing a countryCode (failed, tagged-without-country, etc.)
+        let missingCountry = store.stays.filter { $0.countryCode == nil && $0.tagState != .pending }
+        if !missingCountry.isEmpty {
+            let recovered = await Task.detached(priority: .userInitiated) { () -> [Stay] in
+                missingCountry.compactMap { stay -> Stay? in
+                    guard let code = CountryBorders.countryCode(containing: stay.coordinate) else { return nil }
+                    var copy = stay
+                    copy.countryCode = code
+                    copy.country = CountryText.localizedName(code: code)
+                    if copy.city == nil {
+                        copy.city = OfflineOverseasCities.match(countryCode: code, location: stay.location)
+                    }
+                    copy.tagState = copy.city != nil ? .tagged : .pending
+                    return copy
+                }
+            }.value
+            if !recovered.isEmpty {
+                store.updateStaysBatch(recovered)
+                pendingCount = store.stays.filter { $0.tagState == .pending }.count
+            }
+        }
+
+        // 0.5 Instant offline city recovery for overseas stays (e.g. Canada) where China AutoNavi CLGeocoder fails
+        let missingCity = store.stays.filter { $0.countryCode != nil && $0.city == nil && $0.placeName == nil }
+        if !missingCity.isEmpty {
+            let fixed = await Task.detached(priority: .userInitiated) { () -> [Stay] in
+                missingCity.compactMap { stay -> Stay? in
+                    guard let code = stay.countryCode else { return nil }
+                    if let matchedCity = OfflineOverseasCities.match(countryCode: code, location: stay.location) {
+                        var copy = stay
+                        copy.city = matchedCity
+                        copy.tagState = .tagged
+                        return copy
+                    }
+                    return nil
+                }
+            }.value
+            if !fixed.isEmpty {
+                store.updateStaysBatch(fixed)
+                pendingCount = store.stays.filter { $0.tagState == .pending }.count
+            }
+        }
         // 1. Always prioritize live-recorded stays first (with POI lookup)
         let recordedPending = store.stays.filter { $0.tagState == .pending && !$0.isFromPhotos }
         for var stay in recordedPending.prefix(50) {
@@ -148,7 +192,7 @@ final class PlaceTagger: ObservableObject {
             }
 
             completedBuckets += 1
-            if completedBuckets % 10 == 0 || stagedUpdates.count >= 200 {
+            if completedBuckets % 25 == 0 || stagedUpdates.count >= 400 {
                 store.updateStaysBatch(stagedUpdates)
                 stagedUpdates.removeAll()
                 pendingCount = store.stays.filter { $0.tagState == .pending }.count
@@ -184,13 +228,17 @@ final class PlaceTagger: ObservableObject {
             if error.code == .network {
                 return .rateLimited
             }
-            stay.tagState = .failed
+            applyOfflineCountryFallback(&stay)
             return .done
         } catch let error as NSError where error.domain == NSURLErrorDomain {
             return .offline
         } catch {
-            stay.tagState = .failed
+            applyOfflineCountryFallback(&stay)
             return .done
+        }
+
+        if stay.countryCode == nil {
+            applyOfflineCountryFallback(&stay)
         }
 
         if lookupPOI {
@@ -208,6 +256,19 @@ final class PlaceTagger: ObservableObject {
 
         stay.tagState = (stay.country == nil && stay.city == nil) ? .failed : .tagged
         return .done
+    }
+
+    private func applyOfflineCountryFallback(_ stay: inout Stay) {
+        guard let code = CountryBorders.countryCode(containing: stay.coordinate) else {
+            stay.tagState = (stay.country == nil && stay.city == nil) ? .failed : .tagged
+            return
+        }
+        stay.countryCode = code
+        stay.country = CountryText.localizedName(code: code)
+        if stay.city == nil {
+            stay.city = OfflineOverseasCities.match(countryCode: code, location: stay.location)
+        }
+        stay.tagState = .tagged
     }
 
     private func normalizeCity(placemark p: CLPlacemark) -> String? {
@@ -257,6 +318,10 @@ final class PlaceTagger: ObservableObject {
 private struct AreaGrid {
     private var cells: [Int64: [Stay]] = [:]
     let cellDegrees: Double
+
+    init(cellDegrees: Double) {
+        self.cellDegrees = cellDegrees
+    }
 
     private func cell(_ lat: Double, _ lon: Double) -> (Int64, Int64) {
         (Int64((lat / cellDegrees).rounded(.down)), Int64((lon / cellDegrees).rounded(.down)))

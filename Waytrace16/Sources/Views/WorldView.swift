@@ -1,48 +1,85 @@
 import SwiftUI
 import Photos
 
+private struct WorldSummaryCache: Codable {
+    var countryCount: Int = 0
+    var cityCount: Int = 0
+    var landmarkCount: Int = 0
+    var entryCount: Int = 0
+    var provinceCount: Int = 0
+    var passportCityCount: Int = 0
+    var chinaLit: Int = 0
+    var worldLit: Int = 0
+
+    private static let key = "wt16.world.summaryCache"
+
+    static func load() -> WorldSummaryCache {
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode(WorldSummaryCache.self, from: data) else {
+            return WorldSummaryCache()
+        }
+        return decoded
+    }
+
+    func save() {
+        if let data = try? JSONEncoder().encode(self) {
+            UserDefaults.standard.set(data, forKey: Self.key)
+        }
+    }
+}
+
 struct WorldView: View {
     @Binding var showingSettings: Bool
+    @Binding var selectedTab: RootTab
     @EnvironmentObject private var store: DataStore
     @EnvironmentObject private var tagger: PlaceTagger
+    @ObservedObject private var borderOverrides = BorderStampOverrideStore.shared
+    @ObservedObject private var mustSeeUserStore = MustSeeUserStore.shared
 
     @AppStorage("wt16.passport.theme") private var themeRaw: String = PassportTheme.burgundy.rawValue
     @State private var showFullMap = false
-    @State private var fullMapLayer = 0 // 0=地点, 1=路线
+    @State private var fullMapLayer = 0
     @State private var showPhotoImport = false
+    @State private var showAllFrequent = false
     @State private var searchText = ""
+    @State private var cachedSummary = WorldSummaryCache.load()
+    @State private var hasComputedOnce = false
+    @State private var passportPreview: PassportPreviewData?
+    @State private var countryStats: [RegionStat] = []
+    @State private var frequentPlaces: [FrequentPlace] = []
+    @State private var cityCount: Int = WorldSummaryCache.load().cityCount
+    @State private var landmarkStays: [Stay] = []
 
-    private struct RegionStat: Identifiable {
+    private struct PassportPreviewData: Sendable {
+        let entryCount: Int
+        let provinceCount: Int
+        let cityCount: Int
+        let latestStamps: [PassportStamp]
+        let chinaLit: Int
+        let worldLit: Int
+    }
+
+    private struct RegionStat: Identifiable, Sendable {
         let id: String
+        let code: String?
         let name: String
         let stayCount: Int
         let dayCount: Int
-        let stays: [Stay]
+        let cityCount: Int
+        let latestYear: Int
+        let topCities: [String]
+    }
+
+    fileprivate struct FrequentPlace: Identifiable, Sendable {
+        let id: String
+        let name: String
+        let visitCount: Int
+        let totalDuration: TimeInterval
+        let latestDate: Date
+        let sampleStay: Stay
     }
 
     private var theme: PassportTheme { PassportTheme(rawValue: themeRaw) ?? .burgundy }
-
-    private var countryStats: [RegionStat] {
-        let cal = Calendar.current
-        let grouped = Dictionary(grouping: store.stays.filter { $0.country != nil }) { $0.country! }
-        return grouped.map { key, list in
-            let days = Set(list.map { cal.startOfDay(for: $0.arrival) }).count
-            return RegionStat(id: key, name: key, stayCount: list.count, dayCount: days, stays: list)
-        }.sorted { $0.dayCount > $1.dayCount }
-    }
-
-    private var cityStats: [RegionStat] {
-        let cal = Calendar.current
-        let grouped = Dictionary(grouping: store.stays.filter { $0.city != nil }) { $0.city! }
-        return grouped.map { key, list in
-            let days = Set(list.map { cal.startOfDay(for: $0.arrival) }).count
-            return RegionStat(id: key, name: key, stayCount: list.count, dayCount: days, stays: list)
-        }.sorted { $0.dayCount > $1.dayCount }
-    }
-
-    private var landmarkCount: Int {
-        store.stays.filter(\.isLandmark).count
-    }
 
     private var searchResults: [Stay] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -63,20 +100,21 @@ struct WorldView: View {
                         searchResultsSection
                     } else {
                         summaryGrid
-                        passportFullCard
-                        featureCards
+                        passportCard
+                        mustSeeCard
+                        blindBoxCard
                         mapCard
-                        photoImportCard
+                        albumCard
                         if !countryStats.isEmpty {
-                            regionSection(title: "国家和地区", stats: countryStats)
+                            countriesSection
                         }
-                        if !cityStats.isEmpty {
-                            regionSection(title: "去过的城市", stats: cityStats)
+                        if !frequentPlaces.isEmpty {
+                            frequentPlacesSection
                         }
                     }
                 }
                 .padding(.horizontal)
-                .padding(.bottom, 24)
+                .padding(.bottom, 28)
             }
             .scrollIndicators(.hidden)
             .background(Color(.systemGroupedBackground))
@@ -92,8 +130,9 @@ struct WorldView: View {
                     ProfileToolbarButton(showingSettings: $showingSettings)
                 }
             }
-            .sheet(isPresented: $showPhotoImport) {
-                PhotoImportSheet()
+            .sheet(isPresented: $showPhotoImport) { PhotoImportSheet() }
+            .sheet(isPresented: $showAllFrequent) {
+                FrequentPlacesListSheet(places: frequentPlaces)
             }
             .fullScreenCover(isPresented: $showFullMap) {
                 NavigationStack {
@@ -119,137 +158,339 @@ struct WorldView: View {
                     }
                 }
             }
+            .task(id: "\(store.stays.count)-\(tagger.pendingCount)-\(borderOverrides.revision)-\(mustSeeUserStore.revision)") {
+                let staysSnapshot = store.stays
+                let manual = mustSeeUserStore.manualVisits
+                let excluded = mustSeeUserStore.excludedAutoIDs
+                let computed = await Task.detached(priority: .utility) { () -> (PassportPreviewData, [RegionStat], Int, [Stay], [FrequentPlace]) in
+                    let cal = Calendar.current
+                    let p = PassportEngine.build(stays: staysSnapshot, chunks: [])
+                    let validCodes = p.visitedCountries
+                    let grouped = Dictionary(grouping: staysSnapshot.filter {
+                        if let code = $0.countryCode { return validCodes.contains(code) }
+                        return false
+                    }) { $0.countryCode! }
+
+                    let countries: [RegionStat] = grouped.compactMap { code, list in
+                        let name = CountryText.localizedName(code: code)
+                        let days = Set(list.map { cal.startOfDay(for: $0.arrival) }).count
+                        let cityCounts = Dictionary(grouping: list.compactMap(\.city)) { $0 }.mapValues(\.count)
+                        let topCities = cityCounts.sorted { $0.value > $1.value }.prefix(3).map(\.key)
+                        let latestDate = list.map(\.arrival).max() ?? Date()
+                        let latestYear = cal.component(.year, from: latestDate)
+                        return RegionStat(
+                            id: code,
+                            code: code,
+                            name: name,
+                            stayCount: list.count,
+                            dayCount: days,
+                            cityCount: cityCounts.count,
+                            latestYear: latestYear,
+                            topCities: Array(topCities)
+                        )
+                    }.sorted { $0.dayCount > $1.dayCount }
+
+                    let cities = Set(staysSnapshot.compactMap(\.city)).count
+                    let landmarks = staysSnapshot.filter(\.isLandmark)
+
+                    // Frequent places grouped by displayName (min 2 visits)
+                    let byPlace = Dictionary(grouping: staysSnapshot.filter { $0.displayName != "未知地点" }) { $0.displayName }
+                    let freq: [FrequentPlace] = byPlace.compactMap { name, list in
+                        guard list.count >= 2, let latest = list.max(by: { $0.arrival < $1.arrival }) else { return nil }
+                        let totalDur = list.reduce(0.0) { $0 + $1.duration }
+                        return FrequentPlace(
+                            id: name,
+                            name: name,
+                            visitCount: list.count,
+                            totalDuration: totalDur,
+                            latestDate: latest.arrival,
+                            sampleStay: latest
+                        )
+                    }
+                    .sorted { $0.visitCount > $1.visitCount }
+                    .prefix(30)
+                    .map { $0 }
+
+                    let entries = p.passportStamps.filter { $0.kind == .entry }
+                    let provStamps = p.provinceVisits.values.map {
+                        PassportStamp(id: "province.\($0.province.id)", kind: .province, date: $0.firstVisit, provinceID: $0.province.id)
+                    }
+                    let latest = Array((entries + provStamps + p.cityStamps).sorted { $0.date > $1.date }.prefix(3))
+                    let chinaVisited = MustSee.visitedMap(places: MustSee.china, stays: staysSnapshot, manual: manual, excluded: excluded).count
+                    let worldVisited = MustSee.visitedMap(places: MustSee.world, stays: staysSnapshot, manual: manual, excluded: excluded).count
+                    let preview = PassportPreviewData(
+                        entryCount: entries.count,
+                        provinceCount: p.provinceVisits.count,
+                        cityCount: p.cityStamps.count,
+                        latestStamps: latest,
+                        chinaLit: chinaVisited,
+                        worldLit: worldVisited
+                    )
+                    return (preview, countries, cities, landmarks, freq)
+                }.value
+
+                passportPreview = computed.0
+                countryStats = computed.1
+                cityCount = computed.2
+                landmarkStays = computed.3
+                frequentPlaces = computed.4
+                hasComputedOnce = true
+
+                let updatedCache = WorldSummaryCache(
+                    countryCount: computed.1.count,
+                    cityCount: computed.2,
+                    landmarkCount: computed.3.count,
+                    entryCount: computed.0.entryCount,
+                    provinceCount: computed.0.provinceCount,
+                    passportCityCount: computed.0.cityCount,
+                    chinaLit: computed.0.chinaLit,
+                    worldLit: computed.0.worldLit
+                )
+                cachedSummary = updatedCache
+                updatedCache.save()
+            }
         }
     }
 
-    // Matches upstream 2x2 hairline MetricGrid
+    // MARK: - 1. 2x2 Hairline Metric Grid
+
     private var summaryGrid: some View {
         MetricGrid2x2 {
-            MetricTile(title: "国家与地区", value: "\(countryStats.count)", symbol: "flag.fill", tint: .red)
+            MetricTile(title: "国家与地区", value: "\(hasComputedOnce ? countryStats.count : cachedSummary.countryCount)", symbol: "flag.fill", tint: .red)
         } topRight: {
-            MetricTile(title: "城市", value: "\(cityStats.count)", symbol: "building.2.fill", tint: .indigo)
+            MetricTile(title: "城市", value: "\(hasComputedOnce ? cityCount : cachedSummary.cityCount)", symbol: "building.2.fill", tint: .indigo)
         } bottomLeft: {
-            MetricTile(title: "景点", value: "\(landmarkCount)", symbol: "star.fill", tint: .yellow)
+            MetricTile(title: "景点", value: "\(hasComputedOnce ? landmarkStays.count : cachedSummary.landmarkCount)", symbol: "star.fill", tint: .yellow)
         } bottomRight: {
             MetricTile(title: "记录天数", value: "\(store.recordedDaysCount)", symbol: "calendar", tint: .teal)
         }
     }
 
-    // Matches upstream leather PassportCard
-    private var passportFullCard: some View {
+    // MARK: - 2. 护照与印章 Card (Original Entry Point + Single-Line Subtitle Fix)
+
+    private var passportCard: some View {
         NavigationLink {
             PassportView()
         } label: {
             HStack(spacing: 14) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(theme.coverColor)
-                        .frame(width: 48, height: 62)
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .stroke(theme.foilColor.opacity(0.55), lineWidth: 1)
-                                .padding(3)
-                        )
-                    Image(systemName: "globe.asia.australia.fill")
-                        .font(.title3)
-                        .foregroundColor(theme.foilColor)
-                }
+                miniPassportCover
+                    .frame(width: 72, height: 102)
+                    .shadow(color: .black.opacity(0.22), radius: 6, y: 3)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("漫迹护照与印章")
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("护照与印章")
                         .font(.headline)
                         .foregroundColor(.primary)
-                    Text("国家出入境章 · 中国 34 省朱砂印 · 城市章 · 四至与套章")
-                        .font(.caption)
+                        .lineLimit(1)
+
+                    Text("入境 \(passportPreview?.entryCount ?? cachedSummary.entryCount) · 省份 \(passportPreview?.provinceCount ?? cachedSummary.provinceCount) · 城市 \(passportPreview?.cityCount ?? cachedSummary.passportCityCount)")
+                        .font(.subheadline)
                         .foregroundColor(.secondary)
-                        .lineLimit(2)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+
+                    if let stamps = passportPreview?.latestStamps, !stamps.isEmpty {
+                        ZStack(alignment: .leading) {
+                            ForEach(Array(stamps.enumerated()), id: \.element.id) { index, stamp in
+                                StampArtView(stamp: stamp)
+                                    .frame(width: 48, height: 44)
+                                    .rotationEffect(.degrees(stamp.tilt))
+                                    .offset(x: CGFloat(index) * 38)
+                            }
+                        }
+                        .frame(height: 46)
+                        .padding(.top, 2)
+                    } else {
+                        Text("出入境章 · 34 省朱砂印 · 城市章")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .padding(.top, 2)
+                    }
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
+
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.semibold))
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .foregroundColor(Color(.tertiaryLabel))
             }
-            .padding(16)
+            .padding(14)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
         }
         .buttonStyle(PressableStyle())
     }
 
-    private var featureCards: some View {
-        VStack(spacing: 12) {
-            NavigationLink {
-                MustSeeView()
-            } label: {
-                featureRowCard(
-                    icon: "star.fill",
-                    iconColor: .orange,
-                    title: "此生必去",
-                    subtitle: "中国 100 处 · 世界 100 处夜空星图与自动点亮"
-                )
-            }
-            .buttonStyle(PressableStyle())
-
-            HStack(spacing: 12) {
-                NavigationLink {
-                    BlindBoxView()
-                } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Image(systemName: "gift.fill").foregroundColor(.pink)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
-                        }
-                        Text("旅行盲盒").font(.subheadline.weight(.semibold)).foregroundColor(.primary)
-                        Text("拆登机牌去未知之地").font(.caption2).foregroundColor(.secondary)
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    private var miniPassportCover: some View {
+        let shape = BookCornerRect(topLeading: 2, bottomLeading: 2, bottomTrailing: 7, topTrailing: 7)
+        return ZStack {
+            shape.fill(theme.leather)
+            VStack(spacing: 4) {
+                Text("护照")
+                    .font(.system(size: 9, weight: .semibold))
+                    .tracking(2)
+                Text("PASSPORT")
+                    .font(.system(size: 5.5, weight: .medium, design: .serif))
+                    .tracking(1)
+                ZStack {
+                    Circle().stroke(lineWidth: 0.9)
+                    Image(systemName: theme.emblem)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 17, height: 17)
                 }
-                .buttonStyle(PressableStyle())
-
-                NavigationLink {
-                    VisaWalletView()
-                } label: {
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Image(systemName: "creditcard.and.123").foregroundColor(.blue)
-                            Spacer()
-                            Image(systemName: "chevron.right").font(.caption2).foregroundColor(.secondary)
-                        }
-                        Text("签证夹").font(.subheadline.weight(.semibold)).foregroundColor(.primary)
-                        Text("扫机读码 · 申根 90/180").font(.caption2).foregroundColor(.secondary)
-                    }
-                    .padding(16)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                }
-                .buttonStyle(PressableStyle())
+                .frame(width: 32, height: 32)
+                .padding(.vertical, 3)
+                Text("漫迹")
+                    .font(.system(size: 6, weight: .semibold))
+                    .tracking(1.5)
             }
+            .foregroundStyle(theme.foilGradient)
+            Rectangle()
+                .fill(Color.black.opacity(0.22))
+                .frame(width: 3)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .clipShape(shape)
     }
 
-    private func featureRowCard(icon: String, iconColor: Color, title: String, subtitle: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: icon)
-                .font(.title3)
-                .foregroundColor(.white)
-                .frame(width: 40, height: 40)
-                .background(iconColor.gradient, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.subheadline.weight(.semibold)).foregroundColor(.primary)
-                Text(subtitle).font(.caption).foregroundColor(.secondary)
+    // MARK: - 3. 此生必去 Card (1:1 Original Dual 10x10 Dot-Matrix Card)
+
+    private var mustSeeCard: some View {
+        let cnLit = passportPreview?.chinaLit ?? cachedSummary.chinaLit
+        let worldLit = passportPreview?.worldLit ?? cachedSummary.worldLit
+
+        return NavigationLink {
+            MustSeeView()
+        } label: {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(alignment: .top) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("此生必去")
+                            .font(.title3.bold())
+                            .foregroundColor(.white)
+                        Text("中国与世界，各一百处值得一去的地方")
+                            .font(.subheadline)
+                            .foregroundColor(.white.opacity(0.68))
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundColor(.white.opacity(0.5))
+                        .padding(.top, 4)
+                }
+
+                HStack(spacing: 12) {
+                    mustSeeSubPanel(title: "中国", count: cnLit)
+                    mustSeeSubPanel(title: "世界", count: worldLit)
+                }
             }
-            Spacer()
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundColor(.secondary.opacity(0.6))
+            .padding(18)
+            .background(
+                LinearGradient(
+                    colors: [Color(red: 0.14, green: 0.14, blue: 0.30), Color(red: 0.11, green: 0.10, blue: 0.24)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ),
+                in: RoundedRectangle(cornerRadius: 26, style: .continuous)
+            )
         }
-        .padding(16)
-        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .buttonStyle(PressableStyle())
     }
 
-    // Matches upstream 240pt / 28pt cornerRadius WorldMap card
+    private func mustSeeSubPanel(title: String, count: Int) -> some View {
+        let clamped = min(100, max(0, count))
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white.opacity(0.88))
+                Spacer()
+                HStack(alignment: .firstTextBaseline, spacing: 2) {
+                    Text("\(clamped)")
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
+                        .monospacedDigit()
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [Color(red: 1.0, green: 0.86, blue: 0.50), Color(red: 1.0, green: 0.52, blue: 0.14)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                    Text("/100")
+                        .font(.caption.monospacedDigit())
+                        .foregroundColor(.white.opacity(0.5))
+                }
+            }
+
+            // 20x5 dot matrix (= 100 dots, crisp and compact just like the original UI)
+            Canvas { ctx, size in
+                let cols = 20
+                let rows = 5
+                let spacingX = size.width / CGFloat(cols)
+                let spacingY = size.height / CGFloat(rows)
+                let dotSize = min(spacingX, spacingY) * 0.56
+                let litColor = Color(red: 1.0, green: 0.58, blue: 0.16)
+                let unlitColor = Color.white.opacity(0.16)
+
+                for i in 0..<100 {
+                    let r = i / cols
+                    let c = i % cols
+                    let x = CGFloat(c) * spacingX + (spacingX - dotSize) / 2
+                    let y = CGFloat(r) * spacingY + (spacingY - dotSize) / 2
+                    let rect = CGRect(x: x, y: y, width: dotSize, height: dotSize)
+                    ctx.fill(Path(ellipseIn: rect), with: .color(i < clamped ? litColor : unlitColor))
+                }
+            }
+            .frame(height: 36)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity)
+        .background(Color.white.opacity(0.07), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    // MARK: - 4. 旅行盲盒 Card (1:1 Original Full-Width Mystery Parcel Card)
+
+    private var blindBoxCard: some View {
+        NavigationLink {
+            BlindBoxView()
+        } label: {
+            HStack(spacing: 16) {
+                KraftParcelArt()
+                    .scaleEffect(0.35)
+                    .frame(width: 78, height: 72)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("旅行盲盒")
+                        .font(.headline)
+                        .foregroundColor(.white)
+                    Text("不知道去哪儿？这次让它替你选。")
+                        .font(.subheadline)
+                        .foregroundColor(.white.opacity(0.72))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 4)
+
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundColor(.white.opacity(0.5))
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
+            .background(
+                LinearGradient(
+                    colors: [Color(red: 0.11, green: 0.12, blue: 0.21), Color(red: 0.26, green: 0.19, blue: 0.18)],
+                    startPoint: .leading,
+                    endPoint: .trailing
+                ),
+                in: RoundedRectangle(cornerRadius: 26, style: .continuous)
+            )
+        }
+        .buttonStyle(PressableStyle())
+    }
+
+    // MARK: - 5. World Map Card
+
     private var mapCard: some View {
         Button {
             showFullMap = true
@@ -265,6 +506,7 @@ struct WorldView: View {
             .overlay(alignment: .bottomLeading) {
                 Label("全部足迹", systemImage: "arrow.up.left.and.arrow.down.right")
                     .font(.footnote.weight(.semibold))
+                    .foregroundColor(.primary)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(.ultraThinMaterial, in: Capsule())
@@ -274,29 +516,43 @@ struct WorldView: View {
         .buttonStyle(PressableStyle())
     }
 
-    private var photoImportCard: some View {
+    // MARK: - 6. 相册 Card (1:1 Original Layout)
+
+    private var albumCard: some View {
         Button {
             showPhotoImport = true
         } label: {
-            HStack(spacing: 14) {
-                Image(systemName: "photo.stack.fill")
-                    .font(.title2)
-                    .foregroundColor(.orange)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("从相册找回历史足迹")
-                        .font(.subheadline.weight(.semibold))
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("相册")
+                        .font(.headline)
                         .foregroundColor(.primary)
-                    Text(tagger.progressText ?? "本地读取照片拍摄地点，点亮去过的城市与国家")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    Spacer()
+                    if tagger.isTagging {
+                        ProgressView().scaleEffect(0.85)
+                    } else {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(Color(.tertiaryLabel))
+                    }
                 }
-                Spacer()
-                if tagger.isTagging {
-                    ProgressView()
-                } else {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(.secondary.opacity(0.6))
+
+                HStack(spacing: 14) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .fill(Color.blue.opacity(0.12))
+                            .frame(width: 52, height: 52)
+                        Image(systemName: "photo.badge.plus")
+                            .font(.title2)
+                            .foregroundColor(.blue)
+                    }
+
+                    Text(tagger.progressText ?? "从相册导入历史足迹，或在时间线上点开地点记录照片和心情。")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
                 }
             }
             .padding(16)
@@ -305,36 +561,81 @@ struct WorldView: View {
         .buttonStyle(PressableStyle())
     }
 
-    private func regionSection(title: String, stats: [RegionStat]) -> some View {
+    // MARK: - 7. Countries List (1:1 Original Formatting)
+
+    private var countriesSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SectionHeader(title: title, trailing: "\(stats.count)")
+            Text("国家和地区")
+                .font(.title3.bold())
+                .padding(.horizontal, 4)
+
             VStack(spacing: 0) {
-                ForEach(Array(stats.prefix(12).enumerated()), id: \.element.id) { index, item in
+                ForEach(Array(countryStats.enumerated()), id: \.element.id) { index, item in
                     NavigationLink {
-                        RegionStaysListView(title: item.name, stays: item.stays)
+                        CountryDetailView(countryCode: item.code ?? item.id, fallbackName: item.name)
                     } label: {
-                        HStack {
-                            Text(item.name)
-                                .font(.body.weight(.medium))
-                                .foregroundColor(.primary)
+                        HStack(spacing: 12) {
+                            Text(item.code.map { CountryText.flag(for: $0) } ?? "🌍")
+                                .font(.system(size: 32))
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(item.name)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text("\(Self.formattedNumber(item.dayCount)) 天 · \(item.cityCount) 座城市 · 最近 \(String(item.latestYear))")
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
                             Spacer()
-                            Text("\(item.dayCount) 天 · \(item.stayCount) 次")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
                             Image(systemName: "chevron.right")
                                 .font(.caption.weight(.semibold))
-                                .foregroundColor(.secondary.opacity(0.5))
+                                .foregroundColor(Color(.tertiaryLabel))
                         }
                         .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
+                        .padding(.vertical, 13)
                     }
-                    if index < min(stats.count, 12) - 1 {
-                        Divider().padding(.leading, 16)
+                    if index < countryStats.count - 1 {
+                        Divider().padding(.leading, 60)
                     }
                 }
             }
-            .padding(.vertical, 4)
             .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
+    }
+
+    // MARK: - 8. 常去的地方 Horizontal Photo Cards (1:1 Original UI)
+
+    private var frequentPlacesSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("常去的地方")
+                    .font(.title3.bold())
+                Spacer()
+                Button("全部") {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    showAllFrequent = true
+                }
+                .font(.subheadline.weight(.medium))
+            }
+            .padding(.horizontal, 4)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 12) {
+                    ForEach(frequentPlaces.prefix(10)) { place in
+                        NavigationLink {
+                            DayDetailPage(date: place.latestDate)
+                        } label: {
+                            FrequentPlaceCardView(place: place)
+                        }
+                        .buttonStyle(PressableStyle())
+                    }
+                }
+            }
+
+            Text("给常去的地方起个名字，比如“家”或“学校”，以后每次到访都会自动用上。")
+                .font(.footnote)
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 4)
         }
     }
 
@@ -348,17 +649,27 @@ struct WorldView: View {
             } else {
                 VStack(spacing: 0) {
                     ForEach(Array(searchResults.enumerated()), id: \.element.id) { idx, stay in
-                        HStack(spacing: 12) {
-                            PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 34)
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(stay.displayName).font(.subheadline.weight(.semibold))
-                                Text([stay.subtitle, Formatters.dayTitle(stay.arrival)].compactMap { $0 }.joined(separator: " · "))
-                                    .font(.caption).foregroundColor(.secondary)
+                        NavigationLink {
+                            DayDetailPage(date: stay.arrival)
+                        } label: {
+                            HStack(spacing: 12) {
+                                PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 34)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(stay.displayName)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundColor(.primary)
+                                    Text([stay.subtitle, Formatters.dayTitle(stay.arrival)].compactMap { $0 }.joined(separator: " · "))
+                                        .font(.caption).foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(Color(.tertiaryLabel))
                             }
-                            Spacer()
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 10)
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 10)
+                        .buttonStyle(.plain)
                         if idx < searchResults.count - 1 { Divider().padding(.leading, 62) }
                     }
                 }
@@ -366,23 +677,101 @@ struct WorldView: View {
             }
         }
     }
+
+    private static func formattedNumber(_ n: Int) -> String {
+        NumberFormatter.localizedString(from: NSNumber(value: n), number: .decimal)
+    }
 }
 
-private struct RegionStaysListView: View {
-    let title: String
-    let stays: [Stay]
+// MARK: - Frequent Place Photo Card & Full List Sheet
+
+private struct FrequentPlaceCardView: View {
+    let place: WorldView.FrequentPlace
+    @State private var photoItem: PhotoPreviewItem?
+
+    private var durationSummary: String {
+        let totalHours = Int(place.totalDuration / 3600)
+        let days = totalHours / 24
+        let hours = totalHours % 24
+        if days > 0 {
+            return hours > 0 ? "\(days)天\(hours)小时" : "\(days)天"
+        }
+        return Formatters.duration(place.totalDuration)
+    }
 
     var body: some View {
-        List(stays) { stay in
-            VStack(alignment: .leading, spacing: 4) {
-                Text(stay.displayName).font(.subheadline.weight(.semibold))
-                Text("\(Formatters.dayTitle(stay.arrival)) \(Formatters.timeHM(stay.arrival)) · \(Formatters.duration(stay.duration))")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                if let item = photoItem {
+                    Image(uiImage: item.thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    LinearGradient(
+                        colors: [place.sampleStay.category.tint.opacity(0.22), Color(.tertiarySystemFill)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                    PlaceIcon(category: place.sampleStay.category, isLandmark: place.sampleStay.isLandmark, size: 34)
+                }
             }
-            .padding(.vertical, 2)
+            .frame(width: 158, height: 108)
+            .clipped()
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(place.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Text("\(place.visitCount) 次 · \(durationSummary)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
-        .navigationTitle(title)
+        .frame(width: 158, alignment: .leading)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .task(id: place.id) {
+            photoItem = await StintPhotoFetcher.shared.dayPhotoItem(
+                around: place.latestDate,
+                caption: place.name
+            )
+        }
+    }
+}
+
+private struct FrequentPlacesListSheet: View {
+    let places: [WorldView.FrequentPlace]
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            List(places) { place in
+                NavigationLink {
+                    DayDetailPage(date: place.latestDate)
+                } label: {
+                    HStack(spacing: 12) {
+                        PlaceIcon(category: place.sampleStay.category, isLandmark: place.sampleStay.isLandmark, size: 32)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(place.name).font(.body.weight(.semibold))
+                            Text("\(place.visitCount) 次 · 累计 \(Formatters.duration(place.totalDuration))")
+                                .font(.caption.monospacedDigit())
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle("常去的地方")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
     }
 }
 

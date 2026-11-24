@@ -115,16 +115,18 @@ enum PhotoFootprints {
             }
             if covered { skipped += 1; continue }
             let second = Int(visit.start.timeIntervalSince1970)
-            let seen = (second - 1...second + 1).contains { key in
+            let seen = (second - 2...second + 2).contains { key in
                 importedStarts[key]?.contains {
-                    CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: place) < 50
+                    CLLocation(latitude: $0.latitude, longitude: $0.longitude).distance(from: place) < 500
                 } ?? false
             }
+            // Match consolidate's 2 km spatial merge radius so distinct scenic spots in the same city are never dropped.
             let merged = !seen && importedByDay[calendar.startOfDay(for: visit.start)]?.contains { known in
-                known.arrival.addingTimeInterval(-60) <= visit.start && visit.start <= known.departure.addingTimeInterval(60)
-                    && CLLocation(latitude: known.latitude, longitude: known.longitude).distance(from: place) < 40_000
+                known.arrival.addingTimeInterval(-300) <= visit.end && visit.start <= known.departure.addingTimeInterval(300)
+                    && CLLocation(latitude: known.latitude, longitude: known.longitude).distance(from: place) < 2_000
             } == true
             if !seen && !merged { fresh.append(visit) }
+            else { skipped += 1 }
         }
         return (fresh, skipped)
     }
@@ -161,24 +163,38 @@ enum PhotoFootprints {
         return Summary(scanned: found.0, withLocation: found.1, visits: newStays.count, skippedAlreadyRecorded: found.3)
     }
 
+    /// Merges same-day photo stays ONLY when they are physically within 2 km of each other,
+    /// so distinct scenic spots in the same prefecture-level city (e.g. 上饶市区 vs 三清山) are preserved.
     @MainActor
     static func consolidate(in store: DataStore) async -> Int {
         let calendar = Calendar.current
         let editable = store.stays.filter {
             $0.isFromPhotos && $0.tagState == .tagged && $0.customName == nil && ($0.note ?? "").isEmpty && $0.city != nil
         }
-        let groups = Dictionary(grouping: editable) {
+        let byDayCity = Dictionary(grouping: editable) {
             "\(calendar.startOfDay(for: $0.arrival).timeIntervalSince1970)|\($0.countryCode ?? "")|\($0.city ?? "")"
         }
         var updated: [Stay] = []
         var removedIDs = Set<UUID>()
-        for members in groups.values where members.count > 1 {
+        for members in byDayCity.values where members.count > 1 {
             let sorted = members.sorted { $0.arrival < $1.arrival }
-            var keep = sorted[0]
-            keep.departure = sorted.compactMap(\.departure).max() ?? keep.departure
-            keep.sampleCount = sorted.reduce(0) { $0 + max($1.sampleCount, 1) }
-            updated.append(keep)
-            for extra in sorted.dropFirst() { removedIDs.insert(extra.id) }
+            var clusters: [[Stay]] = []
+            for stay in sorted {
+                if let idx = clusters.firstIndex(where: { cluster in
+                    cluster.first.map { $0.location.distance(from: stay.location) <= 2_000 } ?? false
+                }) {
+                    clusters[idx].append(stay)
+                } else {
+                    clusters.append([stay])
+                }
+            }
+            for cluster in clusters where cluster.count > 1 {
+                var keep = cluster[0]
+                keep.departure = cluster.compactMap(\.departure).max() ?? keep.departure
+                keep.sampleCount = cluster.reduce(0) { $0 + max($1.sampleCount, 1) }
+                updated.append(keep)
+                for extra in cluster.dropFirst() { removedIDs.insert(extra.id) }
+            }
         }
         if !updated.isEmpty { store.updateStaysBatch(updated) }
         if !removedIDs.isEmpty { store.deleteStays(ids: removedIDs) }
