@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("wt16.profile.nationality") private var nationalityCode: String = ""
     @AppStorage("wt16.passport.theme") private var passportThemeRaw: String = PassportTheme.obsidian.rawValue
     @AppStorage("wt16.settings.language") private var appLanguage: String = "system"
+    @AppStorage(Haptics.enabledKey) private var hapticsEnabled: Bool = true
     @AppStorage("wt16.notify.arrivals") private var notifyArrivals: Bool = true
     @AppStorage("wt16.notify.milestones") private var notifyMilestones: Bool = true
     @AppStorage("wt16.notify.weekly") private var notifyWeekly: Bool = true
@@ -31,8 +32,11 @@ struct SettingsView: View {
     @State private var showPhotoImport = false
     @State private var showClearConfirm = false
     @State private var retagged = false
-    @State private var exportedGPXURL: URL?
-    @State private var backupSQLiteURL: URL?
+    private struct ShareFileItem: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
+    @State private var shareFileItem: ShareFileItem?
     @State private var activePicker: ImportKind?
     @State private var isImportingGPX = false
     @State private var importProgressText: String?
@@ -62,6 +66,7 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
                     Button {
+                        Haptics.selection()
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark")
@@ -100,7 +105,12 @@ struct SettingsView: View {
                             if let first = urls.first {
                                 let res = store.restoreBackup(from: first)
                                 if res.success {
-                                    alertMessage = "数据库已恢复：共载入 \(store.chunks.count) 段轨迹、\(store.stays.count) 个地点、\(store.trips.count) 段旅程。"
+                                    let base = "数据库已恢复：共载入 \(store.chunks.count) 段轨迹、\(store.stays.count) 个地点、\(store.trips.count) 段旅程"
+                                    if let extras = res.errorMessage, !extras.isEmpty {
+                                        alertMessage = "\(base)，并同步恢复了 \(extras)。"
+                                    } else {
+                                        alertMessage = "\(base)。"
+                                    }
                                 } else {
                                     alertMessage = res.errorMessage ?? "恢复失败，请确认选择的是有效的 Waytrace16-Backup.sqlite 文件。"
                                 }
@@ -116,12 +126,14 @@ struct SettingsView: View {
             } message: {
                 Text(alertMessage ?? "")
             }
+            .sheet(item: $shareFileItem) { item in
+                NativeActivityShareSheet(items: [item.url])
+            }
             .confirmationDialog("删除所有数据？", isPresented: $showClearConfirm, titleVisibility: .visible) {
                 Button("删除所有数据", role: .destructive) {
                     store.deleteAllData()
                     engine.reloadAfterClear()
-                    exportedGPXURL = nil
-                    backupSQLiteURL = nil
+                    shareFileItem = nil
                 }
                 Button("取消", role: .cancel) {}
             } message: {
@@ -192,8 +204,14 @@ struct SettingsView: View {
             } label: {
                 Label("语言", systemImage: "globe")
             }
+            Toggle(isOn: $hapticsEnabled) {
+                Label("触感反馈", systemImage: "iphone.radiowaves.left.and.right")
+            }
+            .onChange(of: hapticsEnabled) { enabled in
+                if enabled { Haptics.selection() }
+            }
         } footer: {
-            Text("系统权限弹窗的语言会在下次打开 App 时更新。")
+            Text("系统权限弹窗的语言会在下次打开 App 时更新。关闭触感反馈后，全应用按钮与交互震动都会停止。")
         }
     }
 
@@ -205,7 +223,7 @@ struct SettingsView: View {
                 ForEach(PassportTheme.allCases) { item in
                     let isSelected = passportTheme == item
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
                             passportThemeRaw = item.rawValue
                         }
@@ -286,7 +304,7 @@ struct SettingsView: View {
                 }
             }
             .onChange(of: engine.isEnabled) { _ in
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                Haptics.medium()
             }
 
             LabeledContent {
@@ -319,7 +337,7 @@ struct SettingsView: View {
                     }
                 }
                 .onChange(of: engine.precision) { _ in
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                 }
             }
 
@@ -404,25 +422,24 @@ struct SettingsView: View {
                 }
             }
 
-            if let url = backupSQLiteURL {
-                ShareLink(item: url) {
-                    Label("保存本地备份（.sqlite）", systemImage: "externaldrive.badge.checkmark")
+            Button {
+                Haptics.selection()
+                if let url = store.exportBackupFile() {
+                    shareFileItem = ShareFileItem(url: url)
+                } else {
+                    alertMessage = "导出本地数据库失败，请稍后重试。"
                 }
-            } else {
-                Button {
-                    backupSQLiteURL = store.exportBackupFile()
-                } label: {
-                    HStack {
-                        Label {
-                            Text("本地数据库备份").foregroundColor(.primary)
-                        } icon: {
-                            Image(systemName: "icloud.fill").foregroundColor(.blue)
-                        }
-                        Spacer()
-                        Text("导出 .sqlite")
-                            .font(.subheadline)
-                            .foregroundColor(.blue)
+            } label: {
+                HStack {
+                    Label {
+                        Text("本地数据库备份").foregroundColor(.primary)
+                    } icon: {
+                        Image(systemName: "icloud.fill").foregroundColor(.blue)
                     }
+                    Spacer()
+                    Text("导出 .sqlite")
+                        .font(.subheadline)
+                        .foregroundColor(.blue)
                 }
             }
 
@@ -523,22 +540,19 @@ struct SettingsView: View {
                 }
             }
 
-            if let url = exportedGPXURL {
-                ShareLink(item: url) {
-                    Label("分享已生成的 GPX 文件", systemImage: "square.and.arrow.up")
+            Button {
+                Haptics.selection()
+                if let url = GPXExporter.export(
+                    chunks: store.chunks,
+                    stays: store.stays,
+                    privacyZones: store.privacyZones
+                ) {
+                    shareFileItem = ShareFileItem(url: url)
                 }
-            } else {
-                Button {
-                    exportedGPXURL = GPXExporter.export(
-                        chunks: store.chunks,
-                        stays: store.stays,
-                        privacyZones: store.privacyZones
-                    )
-                } label: {
-                    Label("导出全部轨迹（GPX）", systemImage: "square.and.arrow.up")
-                }
-                .disabled(store.chunks.isEmpty && store.stays.isEmpty)
+            } label: {
+                Label("导出全部轨迹（GPX）", systemImage: "square.and.arrow.up")
             }
+            .disabled(store.chunks.isEmpty && store.stays.isEmpty)
 
             Button {
                 activePicker = .gpx
@@ -800,7 +814,10 @@ private struct ProfileEditorSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") {
+                        Haptics.selection()
+                        dismiss()
+                    }
                 }
             }
         }
@@ -979,4 +996,12 @@ private struct NativeDocumentPicker: UIViewControllerRepresentable {
             onPick(urls)
         }
     }
+}
+
+private struct NativeActivityShareSheet: UIViewControllerRepresentable {
+    let items: [Any]
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        UIActivityViewController(activityItems: items, applicationActivities: nil)
+    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

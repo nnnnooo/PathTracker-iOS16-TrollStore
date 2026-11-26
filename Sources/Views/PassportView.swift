@@ -23,15 +23,34 @@ struct PassportView: View {
 
     enum Scope: Int, Hashable { case passport = 0, provinces = 1, cities = 2, keepsakes = 3 }
 
+    init(isRootTab: Bool = false, showingSettings: Binding<Bool>? = nil, initialScope: Scope = .passport) {
+        self.isRootTab = isRootTab
+        self.showingSettings = showingSettings
+        _scope = State(initialValue: initialScope)
+    }
+
+    private enum ActiveSheet: Identifiable {
+        case dataEditor
+        case unvisitedProvince(ChinaProvince)
+        case share(ShareablePassportImage)
+
+        var id: String {
+            switch self {
+            case .dataEditor: return "dataEditor"
+            case .unvisitedProvince(let p): return "unvisited.\(p.id)"
+            case .share(let img): return "share.\(img.id.uuidString)"
+            }
+        }
+    }
+
     @State private var scope: Scope = .passport
     @State private var summary: PassportSummary?
-    @State private var selectedUnvisitedProvince: ChinaProvince?
+    @State private var activeSheet: ActiveSheet?
+    @State private var needsRefreshAfterSheet = false
     @State private var navigatedProvince: ChinaProvince?
     @State private var isProvinceNavActive = false
-    @State private var showDataEditor = false
     @State private var dataRefreshToken = 0
     @State private var chosenThemeAlertName: String?
-    @State private var shareItem: ShareablePassportImage?
 
     private var theme: PassportTheme { PassportTheme(rawValue: themeRaw) ?? .burgundy }
 
@@ -81,20 +100,21 @@ struct PassportView: View {
             }
         }
         .onChange(of: scope) { _ in
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigationBarTrailing) {
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
-                    showDataEditor = true
+                    Haptics.selection()
+                    needsRefreshAfterSheet = true
+                    activeSheet = .dataEditor
                 } label: {
                     Image(systemName: "slider.horizontal.3")
                 }
                 .accessibilityLabel("编辑识别数据")
                 if scope == .provinces, let summary {
                     Button {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Haptics.light()
                         renderProvinceShareCard(summary)
                     } label: {
                         Image(systemName: "square.and.arrow.up")
@@ -105,16 +125,31 @@ struct PassportView: View {
                 }
             }
         }
-        .sheet(isPresented: $showDataEditor) {
-            PassportDataEditorSheet()
-        }
-        .onChange(of: showDataEditor) { isShowing in
-            if !isShowing {
-                // 等待弹窗下滑关闭动画完全结束后再重建护照本，避免关闭时卡顿瞬移
-                Task {
-                    try? await Task.sleep(nanoseconds: 380_000_000)
-                    await MainActor.run { dataRefreshToken &+= 1 }
+        // 合并为单一 .sheet(item:)，避免 iOS 16 同视图挂载多个 .sheet 导致内层弹窗关闭动画被吞掉闪现消失
+        .sheet(item: $activeSheet, onDismiss: {
+            if needsRefreshAfterSheet {
+                needsRefreshAfterSheet = false
+                dataRefreshToken &+= 1
+            }
+        }) { sheet in
+            switch sheet {
+            case .dataEditor:
+                PassportDataEditorSheet()
+            case .unvisitedProvince(let province):
+                VStack(spacing: 14) {
+                    ProvinceSealArtView(id: province.id)
+                        .frame(width: 64, height: 64)
+                        .inkWorn(seed: StampSeed.of(province.id), inked: false)
+                    Text("还没盖上“\(province.shortChar)”")
+                        .font(.headline)
+                    Text("去过\(province.name)之后，这枚印会盖上。")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
+                .padding(28)
+                .presentationDetents([.height(260)])
+            case .share(let item):
+                PassportActivityShareSheet(items: [item.image])
             }
         }
         .alert(
@@ -124,23 +159,6 @@ struct PassportView: View {
             Button("知道了", role: .cancel) { chosenThemeAlertName = nil }
         } message: {
             Text("已切换为「\(chosenThemeAlertName ?? "")」皮色，之后可随时在「设置 → 护照样式」中更换。")
-        }
-        .sheet(item: $selectedUnvisitedProvince) { province in
-            VStack(spacing: 14) {
-                ProvinceSealArtView(id: province.id)
-                    .frame(width: 64, height: 64)
-                    .inkWorn(seed: StampSeed.of(province.id), inked: false)
-                Text("还没盖上“\(province.shortChar)”")
-                    .font(.headline)
-                Text("去过\(province.name)之后，这枚印会盖上。")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .padding(28)
-            .presentationDetents([.height(260)])
-        }
-        .sheet(item: $shareItem) { item in
-            PassportActivityShareSheet(items: [item.image])
         }
         .task(id: "\(store.stays.count)-\(store.chunks.count)-\(tagger.pendingCount)-\(dataRefreshToken)") {
             let staysSnapshot = store.stays
@@ -179,7 +197,7 @@ struct PassportView: View {
                 ForEach(PassportTheme.allCases) { item in
                     let isSelected = theme == item
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.spring(response: 0.32, dampingFraction: 0.78)) {
                             themeRaw = item.rawValue
                             themeChosenOnce = true
@@ -265,9 +283,10 @@ struct PassportView: View {
 
             ProvinceTileMapView(visits: summary.provinceVisits) { province in
                 if summary.provinceVisits[province.id] == nil {
-                    selectedUnvisitedProvince = province
+                    needsRefreshAfterSheet = false
+                    activeSheet = .unvisitedProvince(province)
                 } else {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Haptics.light()
                     navigatedProvince = province
                     isProvinceNavActive = true
                 }
@@ -472,7 +491,8 @@ struct PassportView: View {
         let renderer = ImageRenderer(content: card)
         renderer.scale = 3
         if let uiImage = renderer.uiImage {
-            shareItem = ShareablePassportImage(image: uiImage)
+            needsRefreshAfterSheet = false
+            activeSheet = .share(ShareablePassportImage(image: uiImage))
         }
     }
 }
@@ -923,7 +943,7 @@ private struct PageCurlContainer: UIViewControllerRepresentable {
                                 previousViewControllers: [UIViewController], transitionCompleted completed: Bool) {
             guard completed, let index = (controller.viewControllers?.first as? Page)?.index else { return }
             parent.current = index
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: 0.5)
+            Haptics.soft(0.5)
         }
     }
 }
@@ -1156,7 +1176,7 @@ private struct WorldStampMapSection: View {
     private func chip(title: String, count: String, id: String?) -> some View {
         let on = selectedContinentID == id
         return Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
             withAnimation(.easeInOut(duration: 0.25)) {
                 selectedContinentID = id
             }

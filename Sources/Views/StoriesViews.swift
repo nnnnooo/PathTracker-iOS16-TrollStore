@@ -1052,11 +1052,15 @@ struct WayJourneyDetailView: View {
 
                 HStack(spacing: 0) {
                     figureTile(formatKm(progress.shown), "已走")
+                        .frame(maxWidth: .infinity)
                     Divider().frame(height: 34)
                     figureTile("\(pct)%", "完成")
+                        .frame(width: 92)
                     Divider().frame(height: 34)
                     figureTile("\(progress.lastStopIndex + 1) / \(route.stops.count)", "相当于第几站")
+                        .frame(maxWidth: .infinity)
                 }
+                .padding(.horizontal, 6)
                 .padding(.vertical, 14)
                 .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
 
@@ -1067,7 +1071,7 @@ struct WayJourneyDetailView: View {
                         HStack(spacing: 12) {
                             ForEach(WayClassicRoute.all) { option in
                                 Button {
-                                    UISelectionFeedbackGenerator().selectionChanged()
+                                    Haptics.selection()
                                     withAnimation(.easeInOut(duration: 0.2)) { routeID = option.id }
                                 } label: {
                                     WayRoutePosterCard(route: option, travelled: groundMeters, selected: option.id == route.id)
@@ -1095,19 +1099,20 @@ struct WayJourneyDetailView: View {
                 .font(.system(.title3, design: .rounded).weight(.bold))
                 .monospacedDigit()
                 .lineLimit(1)
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.75)
             Text(label)
                 .font(.caption)
                 .foregroundColor(.secondary)
+                .lineLimit(1)
         }
-        .frame(maxWidth: .infinity)
+        .padding(.horizontal, 8)
     }
 }
 
 private struct WayJourneySatelliteMapView: UIViewRepresentable {
     let progress: WayJourneyProgress
 
-    func makeCoordinator() -> Coordinator { Coordinator(tint: UIColor(progress.route.tint)) }
+    func makeCoordinator() -> Coordinator { Coordinator(progress: progress) }
 
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
@@ -1115,57 +1120,30 @@ private struct WayJourneySatelliteMapView: UIViewRepresentable {
         map.showsCompass = true
         map.isPitchEnabled = false
         map.delegate = context.coordinator
-        configure(map)
+        context.coordinator.attach(to: map)
         return map
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {}
 
-    private func configure(_ map: MKMapView) {
-        let route = progress.route
-        var fullCoords = route.stops.map(\.coordinate)
-        let fullLine = JourneyRoutePoly(coordinates: &fullCoords, count: fullCoords.count)
-        fullLine.style = .dashed
-        map.addOverlay(fullLine)
-
-        var walked = route.path(upTo: progress.shown)
-        if walked.count > 1 {
-            let halo = JourneyRoutePoly(coordinates: &walked, count: walked.count)
-            halo.style = .halo
-            map.addOverlay(halo)
-            let main = JourneyRoutePoly(coordinates: &walked, count: walked.count)
-            main.style = .walked
-            map.addOverlay(main)
-        }
-
-        let marks = route.marks
-        for (idx, stop) in route.stops.enumerated() {
-            let reached = marks[idx] <= progress.shown + 1
-            let showLabel = (idx == 0 || idx == route.stops.count - 1)
-            map.addAnnotation(JourneyStopPin(stop: stop, reached: reached, showLabel: showLabel))
-        }
-
-        var rect = MKMapRect.null
-        for s in route.stops {
-            rect = rect.union(MKMapRect(origin: MKMapPoint(s.coordinate), size: MKMapSize(width: 0, height: 0)))
-        }
-        let pad = max(rect.width, rect.height) * 0.22
-        let framed = MKMapRect(x: rect.minX - pad, y: rect.minY - pad * 1.9, width: rect.width + pad * 2, height: rect.height + pad * 2.8)
-        map.setVisibleMapRect(framed, animated: false)
+    static func dismantleUIView(_ uiView: MKMapView, coordinator: Coordinator) {
+        coordinator.stopAnimation()
     }
 
     final class JourneyRoutePoly: MKGeodesicPolyline {
-        enum Style { case dashed, halo, walked }
+        enum Style { case dashed, halo, walked, core }
         var style: Style = .walked
     }
 
     final class JourneyStopPin: NSObject, MKAnnotation {
+        let index: Int
         let stop: WayClassicRoute.Stop
-        let reached: Bool
+        var reached: Bool
         let showLabel: Bool
         dynamic var coordinate: CLLocationCoordinate2D
         var title: String? { showLabel ? stop.name : nil }
-        init(stop: WayClassicRoute.Stop, reached: Bool, showLabel: Bool) {
+        init(index: Int, stop: WayClassicRoute.Stop, reached: Bool, showLabel: Bool) {
+            self.index = index
             self.stop = stop
             self.reached = reached
             self.showLabel = showLabel
@@ -1173,51 +1151,447 @@ private struct WayJourneySatelliteMapView: UIViewRepresentable {
         }
     }
 
-    final class Coordinator: NSObject, MKMapViewDelegate {
-        let tint: UIColor
-        init(tint: UIColor) { self.tint = tint }
+    final class JourneyWalkerPin: NSObject, MKAnnotation {
+        dynamic var coordinate: CLLocationCoordinate2D
+        init(coordinate: CLLocationCoordinate2D) {
+            self.coordinate = coordinate
+        }
+    }
 
-        func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            guard let poly = overlay as? JourneyRoutePoly else { return MKOverlayRenderer(overlay: overlay) }
-            let r = MKPolylineRenderer(polyline: poly)
-            r.lineCap = .round
-            r.lineJoin = .round
-            switch poly.style {
-            case .dashed:
-                r.strokeColor = UIColor.white.withAlphaComponent(0.7)
-                r.lineWidth = 2.2
-                r.lineDashPattern = [3, 6]
-            case .halo:
-                r.strokeColor = tint.withAlphaComponent(0.35)
-                r.lineWidth = 12
-            case .walked:
-                r.strokeColor = tint
-                r.lineWidth = 4.2
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        let progress: WayJourneyProgress
+        let tint: UIColor
+        private weak var mapView: MKMapView?
+        private var animTimer: Timer?
+        private var stepIndex = 0
+        private let totalSteps = 78 // ~2.6s at 30fps
+
+        // Persistent CAShapeLayer route view (placed strictly BELOW annotation dots) + walker overlay (ABOVE dots)
+        private var routeAnimView: UIView?
+        private var walkerOverlayView: UIView?
+        private var dashedLayer: CAShapeLayer?
+        private var haloLayer: CAShapeLayer?
+        private var mainLayer: CAShapeLayer?
+        private var coreLayer: CAShapeLayer?
+        private var walkerLayer: CALayer?
+
+        private var fullGeoCoords: [CLLocationCoordinate2D] = []
+        private var walkedGeoCoords: [CLLocationCoordinate2D] = []
+        private var screenPoints: [CGPoint] = []
+        private var screenCumLengths: [CGFloat] = []
+        private var screenTotalLength: CGFloat = 0
+        private var currentFraction: Double = 0
+        private var framedMapRect: MKMapRect = .null
+        private var animPrepared = false
+        private var placedBelowAnnotations = false
+
+        private var stopPins: [JourneyStopPin] = []
+        private var highestLitIndex: Int = -1
+
+        init(progress: WayJourneyProgress) {
+            self.progress = progress
+            self.tint = UIColor(progress.route.tint)
+        }
+
+        func stopAnimation() {
+            animTimer?.invalidate()
+            animTimer = nil
+            routeAnimView?.removeFromSuperview()
+            routeAnimView = nil
+            walkerOverlayView?.removeFromSuperview()
+            walkerOverlayView = nil
+        }
+
+        private static func sampleGeodesic(_ coords: [CLLocationCoordinate2D]) -> [CLLocationCoordinate2D] {
+            guard coords.count > 1 else { return coords }
+            var copy = coords
+            let poly = MKGeodesicPolyline(coordinates: &copy, count: copy.count)
+            let count = poly.pointCount
+            let ptr = poly.points()
+            var result: [CLLocationCoordinate2D] = []
+            result.reserveCapacity(count)
+            for i in 0..<count {
+                result.append(ptr[i].coordinate)
             }
-            return r
+            return result
+        }
+
+        func attach(to map: MKMapView) {
+            self.mapView = map
+            let route = progress.route
+            fullGeoCoords = Self.sampleGeodesic(route.stops.map(\.coordinate))
+            walkedGeoCoords = Self.sampleGeodesic(route.path(upTo: progress.shown))
+
+            var rect = MKMapRect.null
+            for s in route.stops {
+                rect = rect.union(MKMapRect(origin: MKMapPoint(s.coordinate), size: MKMapSize(width: 0, height: 0)))
+            }
+            let pad = max(rect.width, rect.height) * 0.22
+            let framed = MKMapRect(x: rect.minX - pad, y: rect.minY - pad * 1.9, width: rect.width + pad * 2, height: rect.height + pad * 2.8)
+            framedMapRect = framed
+            map.setVisibleMapRect(framed, animated: false)
+
+            // Add all stop pins once in fixed order so labels never swap or flicker during animation
+            let initialPins = route.stops.enumerated().map { idx, stop in
+                JourneyStopPin(
+                    index: idx,
+                    stop: stop,
+                    reached: idx == 0 && progress.shown >= 0,
+                    showLabel: (idx == 0 || idx == route.stops.count - 1)
+                )
+            }
+            stopPins = initialPins
+            highestLitIndex = 0
+            map.addAnnotations(initialPins)
+
+            stepIndex = 0
+            currentFraction = 0
+            animPrepared = false
+            placedBelowAnnotations = false
+            animTimer?.invalidate()
+            animTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 30.0, repeats: true) { [weak self] timer in
+                guard let self, let map = self.mapView else { timer.invalidate(); return }
+                if !self.animPrepared {
+                    guard map.bounds.width > 10 && map.bounds.height > 10 else { return }
+                    self.prepareRouteLayers(on: map)
+                }
+                if !self.placedBelowAnnotations {
+                    self.ensureRouteViewBelowAnnotations(on: map)
+                }
+                if self.walkedGeoCoords.count <= 1 {
+                    timer.invalidate()
+                    self.animTimer = nil
+                    return
+                }
+                self.stepIndex += 1
+                let raw = min(1.0, Double(self.stepIndex) / Double(self.totalSteps))
+                let eased = raw * raw * (3.0 - 2.0 * raw)
+                self.renderFrame(fraction: eased, on: map)
+                if self.stepIndex >= self.totalSteps {
+                    timer.invalidate()
+                    self.animTimer = nil
+                    self.finishAnimation(on: map)
+                }
+            }
+        }
+
+        private func findAnnotationContainer(in view: UIView) -> UIView? {
+            if let existing = stopPins.compactMap({ mapView?.view(for: $0)?.superview }).first {
+                return existing
+            }
+            for sub in view.subviews {
+                if String(describing: type(of: sub)).contains("AnnotationContainer") {
+                    return sub
+                }
+                if let found = findAnnotationContainer(in: sub) {
+                    return found
+                }
+            }
+            return nil
+        }
+
+        private func ensureRouteViewBelowAnnotations(on map: MKMapView) {
+            guard let routeView = routeAnimView else { return }
+            if let annContainer = findAnnotationContainer(in: map), let parent = annContainer.superview {
+                if routeView.superview !== parent {
+                    routeView.removeFromSuperview()
+                    routeView.frame = parent.bounds
+                    parent.insertSubview(routeView, belowSubview: annContainer)
+                } else {
+                    parent.insertSubview(routeView, belowSubview: annContainer)
+                }
+                placedBelowAnnotations = true
+                rebuildPaths(on: map)
+            }
+        }
+
+        private func prepareRouteLayers(on map: MKMapView) {
+            animPrepared = true
+            if !framedMapRect.isNull {
+                map.setVisibleMapRect(framedMapRect, animated: false)
+            }
+
+            let routeView = UIView(frame: map.bounds)
+            routeView.backgroundColor = .clear
+            routeView.isUserInteractionEnabled = false
+            routeView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            map.addSubview(routeView)
+            routeAnimView = routeView
+
+            let dashed = CAShapeLayer()
+            dashed.fillColor = UIColor.clear.cgColor
+            dashed.strokeColor = UIColor.white.withAlphaComponent(0.65).cgColor
+            dashed.lineWidth = 2.0
+            dashed.lineCap = .round
+            dashed.lineJoin = .round
+            dashed.lineDashPattern = [3, 6]
+            routeView.layer.addSublayer(dashed)
+            dashedLayer = dashed
+
+            let halo = CAShapeLayer()
+            halo.fillColor = UIColor.clear.cgColor
+            halo.strokeColor = tint.withAlphaComponent(0.35).cgColor
+            halo.lineWidth = 13
+            halo.lineCap = .round
+            halo.lineJoin = .round
+            halo.strokeEnd = 0
+            routeView.layer.addSublayer(halo)
+            haloLayer = halo
+
+            let main = CAShapeLayer()
+            main.fillColor = UIColor.clear.cgColor
+            main.strokeColor = tint.cgColor
+            main.lineWidth = 4.6
+            main.lineCap = .round
+            main.lineJoin = .round
+            main.strokeEnd = 0
+            routeView.layer.addSublayer(main)
+            mainLayer = main
+
+            let core = CAShapeLayer()
+            core.fillColor = UIColor.clear.cgColor
+            core.strokeColor = UIColor.white.withAlphaComponent(0.85).cgColor
+            core.lineWidth = 1.4
+            core.lineCap = .round
+            core.lineJoin = .round
+            core.strokeEnd = 0
+            routeView.layer.addSublayer(core)
+            coreLayer = core
+
+            // Separate walker overlay on top of map so the walking figure renders above stop dots
+            let walkerView = UIView(frame: map.bounds)
+            walkerView.backgroundColor = .clear
+            walkerView.isUserInteractionEnabled = false
+            walkerView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            map.addSubview(walkerView)
+            walkerOverlayView = walkerView
+
+            let badgeImg = renderWalkerBadge()
+            let wLayer = CALayer()
+            wLayer.contents = badgeImg.cgImage
+            wLayer.contentsScale = UIScreen.main.scale
+            wLayer.bounds = CGRect(origin: .zero, size: badgeImg.size)
+            walkerView.layer.addSublayer(wLayer)
+            walkerLayer = wLayer
+
+            ensureRouteViewBelowAnnotations(on: map)
+            rebuildPaths(on: map)
+        }
+
+        private func rebuildPaths(on map: MKMapView) {
+            guard let routeView = routeAnimView else { return }
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+
+            if fullGeoCoords.count > 1 {
+                let fullPath = UIBezierPath()
+                for (i, coord) in fullGeoCoords.enumerated() {
+                    let pt = map.convert(coord, toPointTo: routeView)
+                    if i == 0 { fullPath.move(to: pt) } else { fullPath.addLine(to: pt) }
+                }
+                dashedLayer?.path = fullPath.cgPath
+            }
+
+            if walkedGeoCoords.count > 1 {
+                var pts: [CGPoint] = []
+                var cum: [CGFloat] = []
+                pts.reserveCapacity(walkedGeoCoords.count)
+                cum.reserveCapacity(walkedGeoCoords.count)
+                var total: CGFloat = 0
+                let bezier = UIBezierPath()
+                for (i, coord) in walkedGeoCoords.enumerated() {
+                    let p = map.convert(coord, toPointTo: routeView)
+                    if i == 0 {
+                        bezier.move(to: p)
+                    } else {
+                        let prev = pts[i - 1]
+                        total += hypot(p.x - prev.x, p.y - prev.y)
+                        bezier.addLine(to: p)
+                    }
+                    pts.append(p)
+                    cum.append(total)
+                }
+                screenPoints = pts
+                screenCumLengths = cum
+                screenTotalLength = total
+
+                let cgPath = bezier.cgPath
+                haloLayer?.path = cgPath
+                mainLayer?.path = cgPath
+                coreLayer?.path = cgPath
+
+                let f = CGFloat(currentFraction)
+                haloLayer?.strokeEnd = f
+                mainLayer?.strokeEnd = f
+                coreLayer?.strokeEnd = f
+
+                if let tipInRoute = screenPoint(at: currentFraction),
+                   let walkerView = walkerOverlayView {
+                    walkerLayer?.position = routeView.convert(tipInRoute, to: walkerView)
+                }
+            }
+            CATransaction.commit()
+        }
+
+        private func screenPoint(at fraction: Double) -> CGPoint? {
+            guard !screenPoints.isEmpty else { return nil }
+            if fraction <= 0 { return screenPoints.first }
+            if fraction >= 1 || screenTotalLength <= 0 { return screenPoints.last }
+            let target = screenTotalLength * CGFloat(fraction)
+            for i in 1..<screenCumLengths.count {
+                if screenCumLengths[i] >= target {
+                    let prevLen = screenCumLengths[i - 1]
+                    let segLen = max(screenCumLengths[i] - prevLen, 0.0001)
+                    let t = (target - prevLen) / segLen
+                    let a = screenPoints[i - 1]
+                    let b = screenPoints[i]
+                    return CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+                }
+            }
+            return screenPoints.last
+        }
+
+        private func renderFrame(fraction: Double, on map: MKMapView) {
+            currentFraction = fraction
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            let f = CGFloat(fraction)
+            haloLayer?.strokeEnd = f
+            mainLayer?.strokeEnd = f
+            coreLayer?.strokeEnd = f
+            if let tipInRoute = screenPoint(at: fraction),
+               let routeView = routeAnimView,
+               let walkerView = walkerOverlayView {
+                walkerLayer?.position = routeView.convert(tipInRoute, to: walkerView)
+            }
+            CATransaction.commit()
+
+            // Light up stops strictly in sequential route order (0, 1, 2, ...) as the line reaches each stop
+            let route = progress.route
+            let drawnDistance = progress.shown * fraction
+            let marks = route.marks
+            var nextIdx = highestLitIndex + 1
+            while nextIdx < stopPins.count && marks[nextIdx] <= drawnDistance + 1 {
+                let pin = stopPins[nextIdx]
+                pin.reached = true
+                highestLitIndex = nextIdx
+                if let view = map.view(for: pin) {
+                    applyPinAppearance(view: view, pin: pin)
+                    view.transform = CGAffineTransform(scaleX: 1.32, y: 1.32)
+                    UIView.animate(withDuration: 0.28, delay: 0, usingSpringWithDamping: 0.65, initialSpringVelocity: 0.5, options: [.allowUserInteraction]) {
+                        view.transform = .identity
+                    }
+                }
+                nextIdx += 1
+            }
+        }
+
+        private func finishAnimation(on map: MKMapView) {
+            currentFraction = 1.0
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            haloLayer?.strokeEnd = 1.0
+            mainLayer?.strokeEnd = 1.0
+            coreLayer?.strokeEnd = 1.0
+            CATransaction.commit()
+
+            // Ensure all reached stops are lit
+            let marks = progress.route.marks
+            for idx in (highestLitIndex + 1)..<stopPins.count where marks[idx] <= progress.shown + 1 {
+                let pin = stopPins[idx]
+                pin.reached = true
+                highestLitIndex = idx
+                if let view = map.view(for: pin) {
+                    applyPinAppearance(view: view, pin: pin)
+                }
+            }
+
+            // Keep the glowing route line permanently visible; only fade out the walker badge when 100% complete
+            if progress.isComplete, let walkerView = walkerOverlayView {
+                UIView.animate(withDuration: 0.25, delay: 0.1, options: [.allowUserInteraction]) {
+                    walkerView.alpha = 0
+                } completion: { _ in
+                    walkerView.removeFromSuperview()
+                }
+                walkerOverlayView = nil
+                walkerLayer = nil
+            }
+        }
+
+        private func isUserInteracting(with mapView: MKMapView) -> Bool {
+            let allRecognizers = (mapView.gestureRecognizers ?? []) + mapView.subviews.flatMap { $0.gestureRecognizers ?? [] }
+            return allRecognizers.contains { $0.state == .began || $0.state == .changed }
+        }
+
+        func mapView(_ mapView: MKMapView, regionWillChangeAnimated animated: Bool) {
+            if animTimer != nil && animPrepared && stepIndex > 3 && isUserInteracting(with: mapView) {
+                animTimer?.invalidate()
+                animTimer = nil
+                finishAnimation(on: mapView)
+            }
+        }
+
+        func mapViewDidChangeVisibleRegion(_ mapView: MKMapView) {
+            guard animPrepared else { return }
+            rebuildPaths(on: mapView)
         }
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            if let walker = annotation as? JourneyWalkerPin {
+                let id = "jWalkerPin"
+                let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
+                    ?? MKAnnotationView(annotation: walker, reuseIdentifier: id)
+                view.annotation = walker
+                view.displayPriority = .required
+                view.zPriority = .max
+                view.image = renderWalkerBadge()
+                return view
+            }
             guard let pin = annotation as? JourneyStopPin else { return nil }
-            let id = pin.showLabel ? "jPinLabeled" : "jPin"
+            let id = "jPin_\(pin.index)"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
                 ?? MKAnnotationView(annotation: pin, reuseIdentifier: id)
             view.annotation = pin
             view.displayPriority = .required
-            view.image = renderDot(reached: pin.reached, label: pin.showLabel ? pin.stop.name : nil)
+            applyPinAppearance(view: view, pin: pin)
             return view
         }
 
-        private func renderDot(reached: Bool, label: String?) -> UIImage {
+        private func applyPinAppearance(view: MKAnnotationView, pin: JourneyStopPin) {
+            let label = pin.showLabel ? pin.stop.name : nil
+            let rendered = renderDot(reached: pin.reached, label: label)
+            view.image = rendered.image
+            view.centerOffset = rendered.centerOffset
+        }
+
+        private func renderWalkerBadge() -> UIImage {
+            let size: CGFloat = 28
+            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { _ in
+                let rect = CGRect(x: 2, y: 2, width: size - 4, height: size - 4)
+                let path = UIBezierPath(ovalIn: rect)
+                tint.setFill()
+                path.fill()
+                UIColor.white.setStroke()
+                path.lineWidth = 2.2
+                path.stroke()
+                if let sym = UIImage(systemName: "figure.walk", withConfiguration: UIImage.SymbolConfiguration(pointSize: 11, weight: .bold))?.withTintColor(.white, renderingMode: .alwaysOriginal) {
+                    let s = sym.size
+                    sym.draw(in: CGRect(x: (size - s.width) / 2, y: (size - s.height) / 2, width: s.width, height: s.height))
+                }
+            }
+        }
+
+        private func renderDot(reached: Bool, label: String?) -> (image: UIImage, centerOffset: CGPoint) {
             let dotSize: CGFloat = reached ? 14 : 9
             let labelAttrs: [NSAttributedString.Key: Any] = [
                 .font: UIFont.systemFont(ofSize: 11, weight: .bold),
                 .foregroundColor: UIColor.white
             ]
             let textSize = label.map { ($0 as NSString).size(withAttributes: labelAttrs) } ?? .zero
-            let w = max(dotSize + 4, textSize.width + 6)
-            let h = dotSize + 4 + (label != nil ? textSize.height + 4 : 0)
-            return UIGraphicsImageRenderer(size: CGSize(width: w, height: h)).image { _ in
+            let dotAreaH = dotSize + 4
+            let w = max(dotAreaH, textSize.width + 6)
+            let h = dotAreaH + (label != nil ? textSize.height + 4 : 0)
+            let img = UIGraphicsImageRenderer(size: CGSize(width: w, height: h)).image { _ in
                 let dotRect = CGRect(x: (w - dotSize) / 2, y: 2, width: dotSize, height: dotSize)
                 let path = UIBezierPath(ovalIn: dotRect)
                 (reached ? tint : UIColor.white.withAlphaComponent(0.85)).setFill()
@@ -1234,6 +1608,9 @@ private struct WayJourneySatelliteMapView: UIViewRepresentable {
                     )
                 }
             }
+            // Keep the dot center aligned with the exact map coordinate even when a label is drawn below it
+            let offsetY = (h - dotAreaH) / 2
+            return (img, CGPoint(x: 0, y: offsetY))
         }
     }
 }

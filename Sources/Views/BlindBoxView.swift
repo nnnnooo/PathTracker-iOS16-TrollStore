@@ -31,13 +31,9 @@ struct BlindBoxView: View {
 
             ScrollView {
                 VStack(spacing: 22) {
-                    if let pass = currentPass {
-                        boardingPassSection(pass)
-                    } else {
-                        headerGreeting
-                        parcelHero
-                        selectorCard
-                    }
+                    headerGreeting
+                    parcelHero
+                    selectorCard
 
                     if !boxStore.savedPasses.isEmpty {
                         savedPassesSection
@@ -51,30 +47,33 @@ struct BlindBoxView: View {
         }
         .preferredColorScheme(.dark)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .navigationTitle("旅行盲盒")
         .navigationBarTitleDisplayMode(.inline)
-        .navigationBarBackButtonHidden(currentPass != nil)
-        .toolbar {
-            if currentPass != nil {
-                ToolbarItem(placement: .navigationBarLeading) {
-                    Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            currentPass = nil
+        .navigationDestination(isPresented: Binding(
+            get: { currentPass != nil },
+            set: { if !$0 { currentPass = nil } }
+        )) {
+            if let pass = currentPass {
+                ZStack {
+                    LinearGradient(colors: [nightTop, nightBottom], startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea()
+                    BlindBoxStarfield()
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                    ScrollView {
+                        VStack(spacing: 22) {
+                            boardingPassSection(pass)
                         }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "chevron.left")
-                                .font(.body.weight(.semibold))
-                            Text("盲盒")
-                        }
-                        .foregroundColor(.white)
+                        .padding(.horizontal, 18)
+                        .padding(.top, 8)
+                        .padding(.bottom, 36)
                     }
+                    .scrollIndicators(.hidden)
                 }
-            }
-            ToolbarItem(placement: .principal) {
-                Text("旅行盲盒")
-                    .font(.headline)
-                    .foregroundColor(.white)
+                .preferredColorScheme(.dark)
+                .toolbarColorScheme(.dark, for: .navigationBar)
+                .navigationTitle("登机牌")
+                .navigationBarTitleDisplayMode(.inline)
             }
         }
         .task(id: "\(store.stays.count)-\(userStore.revision)") {
@@ -146,7 +145,7 @@ struct BlindBoxView: View {
                 isPressing = pressing
                 if pressing {
                     shakePhase.toggle()
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Haptics.light()
                 }
             }, perform: {
                 drawNewPass()
@@ -201,7 +200,7 @@ struct BlindBoxView: View {
                 ForEach(BlindBoxEngine.Horizon.allCases) { item in
                     let on = horizon == item
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.easeInOut(duration: 0.2)) { horizon = item }
                     } label: {
                         VStack(spacing: 6) {
@@ -242,7 +241,7 @@ struct BlindBoxView: View {
                     ForEach(BlindBoxEngine.Vibe.allCases) { item in
                         let on = vibe == item
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             withAnimation(.easeInOut(duration: 0.2)) { vibe = item }
                         } label: {
                             HStack(spacing: 5) {
@@ -391,7 +390,7 @@ struct BlindBoxView: View {
             // Actions
             HStack(spacing: 10) {
                 Button {
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.success()
                     boxStore.save(pass)
                     userStore.addWish(pass.placeID)
                 } label: {
@@ -552,7 +551,7 @@ struct BlindBoxView: View {
     }
 
     private func drawNewPass() {
-        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+        Haptics.heavy()
         withAnimation(.spring(response: 0.45, dampingFraction: 0.78)) {
             currentPass = BlindBoxEngine.draw(
                 horizon: horizon,

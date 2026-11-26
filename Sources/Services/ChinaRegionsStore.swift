@@ -777,6 +777,17 @@ final class ChinaRegionsStore: ObservableObject {
         }
     }
 
+    func exportBackupSnapshot() -> (payload: VisitedAreasPayload, removed: [String]) {
+        (buildPayload(), Array(manuallyRemoved).sorted())
+    }
+
+    func restoreFromBackup(payload: VisitedAreasPayload, removed: [String]) {
+        apply(payload)
+        manuallyRemoved = Set(removed)
+        hasUnsyncedChanges = false
+        persistLocal()
+    }
+
     // MARK: - GitHub Bidirectional Sync (1:1 Compatible with MyTravelsChina editor.js)
 
     func pullFromGitHub() async {

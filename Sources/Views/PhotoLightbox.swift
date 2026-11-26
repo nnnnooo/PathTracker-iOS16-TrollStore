@@ -28,7 +28,7 @@ enum PhotoLightboxPresenter {
         guard let presenter = topViewController() else { return }
         if currentHost != nil { return }
 
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Haptics.light()
 
         let safeIndex = min(max(0, startIndex), items.count - 1)
         let dismissAction: () -> Void = {
@@ -111,7 +111,7 @@ private struct PhotoLightboxView: View {
                     }
                     Spacer()
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         onDismiss()
                     } label: {
                         Image(systemName: "xmark")

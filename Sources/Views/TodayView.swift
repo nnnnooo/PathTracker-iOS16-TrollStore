@@ -68,7 +68,7 @@ struct TodayView: View {
             .overlay(alignment: .bottom) {
                 if !isToday {
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.spring(response: 0.4, dampingFraction: 0.82)) {
                             selectedDate = Date()
                         }
@@ -144,12 +144,16 @@ struct TodayView: View {
                         .toolbar {
                             ToolbarItem(placement: .navigationBarLeading) {
                                 Button("今天") {
+                                    Haptics.selection()
                                     selectedDate = Date()
                                     showDatePicker = false
                                 }
                             }
                             ToolbarItem(placement: .confirmationAction) {
-                                Button("完成") { showDatePicker = false }
+                                Button("完成") {
+                                    Haptics.selection()
+                                    showDatePicker = false
+                                }
                             }
                         }
                 }
@@ -211,7 +215,7 @@ struct TodayView: View {
     private func shift(by days: Int) {
         guard let next = Calendar.current.date(byAdding: .day, value: days, to: selectedDate),
               next <= Date() else { return }
-        UISelectionFeedbackGenerator().selectionChanged()
+        Haptics.selection()
         withAnimation(.easeInOut(duration: 0.22)) {
             selectedDate = next
         }
@@ -237,7 +241,7 @@ struct TodayView: View {
                 }
                 Spacer(minLength: 8)
                 Button {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    Haptics.medium()
                     engine.endActiveRecording()
                 } label: {
                     Label("结束", systemImage: "stop.fill")
@@ -262,7 +266,7 @@ struct TodayView: View {
                 }
                 Spacer(minLength: 8)
                 Button("继续") {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    Haptics.medium()
                     withAnimation { engine.resume() }
                 }
                 .buttonStyle(.borderedProminent)
@@ -284,7 +288,7 @@ struct TodayView: View {
                 }
                 HStack(spacing: 10) {
                     Button {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Haptics.medium()
                         showNewRecording = true
                     } label: {
                         Label("开始记录", systemImage: "record.circle")
@@ -295,7 +299,7 @@ struct TodayView: View {
                     .tint(.orange)
 
                     Button("全天自动") {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Haptics.medium()
                         if engine.authorization == .notDetermined { engine.requestWhenInUse() }
                         engine.isEnabled = true
                     }
@@ -337,7 +341,7 @@ struct TodayView: View {
                     Section("记录模式") {
                         ForEach(LocationEngine.Precision.allCases) { mode in
                             Button {
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selection()
                                 engine.precision = mode
                             } label: {
                                 if engine.precision == mode {
@@ -374,19 +378,19 @@ struct TodayView: View {
                 Menu {
                     Section("暂停记录") {
                         Button("暂停，直到我继续") {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             engine.pause(until: nil)
                         }
                         Button("暂停 1 小时") {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             engine.pause(until: Date().addingTimeInterval(3600))
                         }
                         Button("暂停 3 小时") {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             engine.pause(until: Date().addingTimeInterval(3 * 3600))
                         }
                         Button("暂停到明天早上") {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             let cal = Calendar.current
                             let tomorrow = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: Date()))!
                             engine.pause(until: tomorrow.addingTimeInterval(7 * 3600))
@@ -500,11 +504,36 @@ struct TodayView: View {
             case .move(let c): return c.startDate
             }
         }
+
+        var endDate: Date {
+            switch self {
+            case .stay(let s): return s.departure ?? Date.distantFuture
+            case .move(let c): return c.endDate
+            }
+        }
+    }
+
+    private static func isEarlier(_ lhs: TimelineEntry, _ rhs: TimelineEntry) -> Bool {
+        let lEnd = lhs.endDate
+        let rEnd = rhs.endDate
+        if abs(lEnd.timeIntervalSince(rEnd)) > 90 {
+            return lEnd < rEnd
+        }
+        switch (lhs, rhs) {
+        case (.stay(let s), .move(let c)):
+            let dep = s.departure ?? Date.distantFuture
+            return abs(c.endDate.timeIntervalSince(dep)) <= abs(c.endDate.timeIntervalSince(s.arrival))
+        case (.move(let c), .stay(let s)):
+            let dep = s.departure ?? Date.distantFuture
+            return abs(c.endDate.timeIntervalSince(s.arrival)) < abs(c.endDate.timeIntervalSince(dep))
+        default:
+            return lhs.sortDate < rhs.sortDate
+        }
     }
 
     private var timelineEntries: [TimelineEntry] {
         let sorted = (dayStays.map { TimelineEntry.stay($0) } + dayChunks.map { TimelineEntry.move($0) })
-            .sorted { $0.sortDate < $1.sortDate }
+            .sorted(by: Self.isEarlier)
         return newestFirst ? sorted.reversed() : sorted
     }
 
@@ -516,7 +545,7 @@ struct TodayView: View {
                 Spacer()
                 if !entries.isEmpty {
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.easeInOut(duration: 0.25)) { newestFirst.toggle() }
                     } label: {
                         Label(newestFirst ? "最新在前" : "最早在前", systemImage: "arrow.up.arrow.down")
@@ -564,6 +593,7 @@ struct TodayView: View {
                             }
                             TimelineStayRow(
                                 stay: stay,
+                                dayStays: dayStays,
                                 showsCity: stay.city != prevStay?.city,
                                 day: selectedDate,
                                 isFirst: isFirst,
@@ -651,9 +681,9 @@ struct TodayView: View {
 // MARK: - Upstream Timeline Rail Subviews (Two-line Compact Cards + Room Around Spine)
 
 private enum TimelineRail {
-    static let times: CGFloat = 46
-    static let afterTimes: CGFloat = 6
-    static let width: CGFloat = 44
+    static let times: CGFloat = 62
+    static let afterTimes: CGFloat = 4
+    static let width: CGFloat = 40
     static let beforeCard: CGFloat = 8
 }
 
@@ -690,6 +720,7 @@ private struct TimelineRailLine: View {
 
 private struct TimelineStayRow: View {
     let stay: Stay
+    let dayStays: [Stay]
     var showsCity: Bool = true
     let day: Date
     let isFirst: Bool
@@ -701,50 +732,81 @@ private struct TimelineStayRow: View {
     private var tint: Color { stay.isLandmark ? PlaceCategory.landmark.tint : stay.category.tint }
 
     private var kindLabel: String? {
-        let label = stay.isLandmark ? PlaceCategory.landmark.label : stay.category.label
-        return label == stay.displayName ? nil : label
+        stay.isLandmark ? PlaceCategory.landmark.label : stay.category.label
+    }
+
+    private func dayOffset(of target: Date) -> Int {
+        let cal = Calendar.current
+        return cal.dateComponents([.day], from: cal.startOfDay(for: day), to: cal.startOfDay(for: target)).day ?? 0
+    }
+
+    @ViewBuilder
+    private func timeWithDayBadge(_ date: Date, font: Font, color: Color) -> some View {
+        let offset = dayOffset(of: date)
+        HStack(alignment: .center, spacing: 3) {
+            if offset != 0 {
+                Text(offset > 0 ? "+\(offset)" : "\(offset)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 3.5)
+                    .padding(.vertical, 1)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
+                    .fixedSize()
+            }
+            Text(Formatters.timeHM(date))
+                .font(font)
+                .foregroundColor(color)
+                .fixedSize()
+        }
     }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            // Left margin 24h times
+            // Left margin 24h times: departure (or "现在") in bold primary on top, arrival in gray caption below
             VStack(alignment: .trailing, spacing: 1) {
-                Text(Formatters.timeHM(stay.arrival))
-                    .font(.subheadline.weight(.semibold))
                 if let dep = stay.departure {
-                    Text(Formatters.timeHM(dep))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .padding(.top, 2)
+                    timeWithDayBadge(dep, font: .subheadline.weight(.semibold), color: .primary)
+                } else {
+                    Text("现在")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                        .fixedSize()
                 }
+                timeWithDayBadge(stay.arrival, font: .caption, color: .secondary)
+                    .padding(.top, 2)
             }
             .monospacedDigit()
             .lineLimit(1)
-            .minimumScaleFactor(0.8)
             .frame(width: TimelineRail.times, alignment: .trailing)
-            .padding(.top, 13)
+            .padding(.top, 10)
 
             // Center rail + node (with breathing room on both sides)
             ZStack(alignment: .top) {
                 TimelineRailLine(fadesIn: isFirst, fadesOut: isLast && !isHere)
-                PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 26)
-                    .padding(3)
-                    .background(Circle().fill(Color(.systemGroupedBackground)))
-                    .overlay {
-                        if isHere { TimelineNowRing(color: tint) }
+                ZStack {
+                    if isHere {
+                        TimelineNowRing(color: tint)
+                    } else {
+                        Circle()
+                            .fill(Color(.systemGroupedBackground))
+                            .frame(width: 32, height: 32)
                     }
-                    .overlay(alignment: .bottomTrailing) {
-                        if stay.isFromPhotos {
-                            Image(systemName: "photo.fill")
-                                .font(.system(size: 7, weight: .bold))
-                                .foregroundColor(.white)
-                                .frame(width: 14, height: 14)
-                                .background(Circle().fill(Color.pink))
-                                .overlay(Circle().stroke(Color(.systemGroupedBackground), lineWidth: 1.5))
-                                .offset(x: 2, y: 2)
-                        }
+                    PlaceIcon(category: stay.category, isLandmark: stay.isLandmark, size: 26)
+                        .shadow(color: isHere ? tint.opacity(0.24) : .clear, radius: 5, x: 0, y: 0)
+                }
+                .frame(width: 32, height: 32)
+                .overlay(alignment: .bottomTrailing) {
+                    if stay.isFromPhotos {
+                        Image(systemName: "photo.fill")
+                            .font(.system(size: 7, weight: .bold))
+                            .foregroundColor(.white)
+                            .frame(width: 14, height: 14)
+                            .background(Circle().fill(Color.pink))
+                            .overlay(Circle().stroke(Color(.systemGroupedBackground), lineWidth: 1.5))
+                            .offset(x: 2, y: 2)
                     }
-                    .padding(.top, 11)
+                }
+                .padding(.top, 11)
             }
             .padding(.leading, TimelineRail.afterTimes)
 
@@ -807,23 +869,22 @@ private struct TimelineStayRow: View {
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 11)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 54, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
                     .fill(Color(.secondarySystemGroupedBackground))
-                    .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(tint.opacity(0.06)))
-                    .overlay {
-                        if isHere {
-                            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                                .stroke(tint.opacity(0.35), lineWidth: 1)
-                        }
-                    }
+                    .overlay(RoundedRectangle(cornerRadius: 20, style: .continuous).fill(tint.opacity(0.06)))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(isHere ? tint.opacity(0.45) : Color.primary.opacity(0.08), lineWidth: isHere ? 1.2 : 0.75)
+                    )
+                    .shadow(color: .black.opacity(0.045), radius: 5, y: 2)
             )
             .padding(.leading, TimelineRail.beforeCard)
             .padding(.bottom, 10)
         }
         .task(id: stay.id) {
-            photos = await StintPhotoFetcher.shared.stayPhotoItems(for: stay)
+            photos = await StintPhotoFetcher.shared.stayPhotoItems(for: stay, among: dayStays)
         }
     }
 
@@ -926,16 +987,12 @@ private struct MiniRouteSketchView: View {
 
 private struct TimelineNowRing: View {
     let color: Color
-    @State private var breathe = false
 
     var body: some View {
         Circle()
-            .stroke(color.opacity(breathe ? 0 : 0.55), lineWidth: 2)
-            .scaleEffect(breathe ? 1.45 : 1)
-            .animation(.easeOut(duration: 1.8).repeatForever(autoreverses: false), value: breathe)
-            .onAppear {
-                breathe = true
-            }
+            .fill(color.opacity(0.22))
+            .frame(width: 38, height: 38)
+            .blur(radius: 5)
             .allowsHitTesting(false)
     }
 }
@@ -1036,7 +1093,7 @@ private struct MoveDetailSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             mapResetToken &+= 1
                         } label: {
                             Image(systemName: "location")
@@ -1177,6 +1234,9 @@ private struct MoveDetailSheet: View {
                     Button {
                         if selectedMode != chunk.mode {
                             store.updateChunkMode(id: chunk.id, mode: selectedMode)
+                            Haptics.success()
+                        } else {
+                            Haptics.selection()
                         }
                         dismiss()
                     } label: {
@@ -1227,7 +1287,7 @@ private struct MovementModePickerView: View {
             VStack(spacing: 0) {
                 ForEach(Array(Self.selectableModes.enumerated()), id: \.element) { idx, mode in
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         selectedMode = mode
                         dismiss()
                     } label: {

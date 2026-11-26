@@ -46,7 +46,7 @@ struct GPSSignalBadge: View {
 
     var body: some View {
         Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
             showHelp = false
             showPopover = true
         } label: {
@@ -148,7 +148,7 @@ private struct GPSSignalPopoverContent: View {
                             .background(barColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
                         Spacer(minLength: 4)
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             showHelp.toggle()
                         } label: {
                             Image(systemName: "questionmark.circle")
@@ -162,7 +162,7 @@ private struct GPSSignalPopoverContent: View {
                         Button {
                             guard location != nil else { return }
                             UIPasteboard.general.string = coordText
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                            Haptics.light()
                             withAnimation { copied = true }
                             Task {
                                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -203,7 +203,8 @@ private struct GPSSignalPopoverContent: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 12)
-        .frame(width: 260)
+        .frame(width: 260, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
     }
 }
 
@@ -222,6 +223,12 @@ private struct AlwaysPopoverAnchor<PopoverContent: View>: UIViewRepresentable {
         return view
     }
 
+    private func fitSize(for host: UIHostingController<PopoverContent>) -> CGSize {
+        host.view.invalidateIntrinsicContentSize()
+        let fitted = host.sizeThatFits(in: CGSize(width: 260, height: CGFloat.greatestFiniteMagnitude))
+        return CGSize(width: 260, height: ceil(fitted.height))
+    }
+
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.parent = self
         if isPresented {
@@ -230,8 +237,10 @@ private struct AlwaysPopoverAnchor<PopoverContent: View>: UIViewRepresentable {
                 let host = UIHostingController(rootView: content())
                 host.modalPresentationStyle = .popover
                 host.view.backgroundColor = .clear
-                let targetSize = host.sizeThatFits(in: CGSize(width: 260, height: 320))
-                host.preferredContentSize = CGSize(width: max(targetSize.width, 260), height: targetSize.height + 6)
+                if #available(iOS 16.0, *) {
+                    host.sizingOptions = .preferredContentSize
+                }
+                host.preferredContentSize = fitSize(for: host)
 
                 if let pop = host.popoverPresentationController {
                     pop.sourceView = uiView
@@ -243,8 +252,7 @@ private struct AlwaysPopoverAnchor<PopoverContent: View>: UIViewRepresentable {
                 presenter.present(host, animated: true)
             } else if let host = context.coordinator.presentedVC {
                 host.rootView = content()
-                let targetSize = host.sizeThatFits(in: CGSize(width: 260, height: 320))
-                host.preferredContentSize = CGSize(width: max(targetSize.width, 260), height: targetSize.height + 6)
+                host.preferredContentSize = fitSize(for: host)
             }
         } else if let host = context.coordinator.presentedVC {
             context.coordinator.presentedVC = nil
@@ -463,7 +471,7 @@ struct PassportDataEditorSheet: View {
                 .padding(.horizontal, 16)
                 .padding(.vertical, 10)
                 .onChange(of: tab) { _ in
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                 }
 
                 if isLoading {
@@ -493,7 +501,7 @@ struct PassportDataEditorSheet: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     if tab == .borders {
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             showAddBorder = true
                         } label: {
                             Label("添加", systemImage: "plus")
@@ -502,7 +510,7 @@ struct PassportDataEditorSheet: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("完成") {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         dismiss()
                     }
                 }
@@ -517,7 +525,7 @@ struct PassportDataEditorSheet: View {
                     visitedCountryCodes: countryGroups.map(\.id)
                 ) { saved in
                     borderOverrides.saveStamp(saved)
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.success()
                 }
             }
             .sheet(isPresented: $showAddBorder) {
@@ -536,7 +544,7 @@ struct PassportDataEditorSheet: View {
                     visitedCountryCodes: countryGroups.map(\.id)
                 ) { saved in
                     borderOverrides.saveStamp(saved)
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.success()
                 }
             }
             .alert("批量修改城市名称", isPresented: Binding(get: { renamingCity != nil }, set: { if !$0 { renamingCity = nil } })) {
@@ -552,7 +560,7 @@ struct PassportDataEditorSheet: View {
                                 return copy
                             }
                             store.updateStaysBatch(updated)
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            Haptics.success()
                         }
                     }
                     renamingCity = nil
@@ -567,7 +575,7 @@ struct PassportDataEditorSheet: View {
             ) { target in
                 Button("确认删除", role: .destructive) {
                     store.deleteStays(ids: target.stayIDs)
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.success()
                     confirmDeleteTarget = nil
                 }
                 Button("取消", role: .cancel) {
@@ -643,7 +651,7 @@ struct PassportDataEditorSheet: View {
                         Spacer(minLength: 4)
 
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             editingBorder = BorderStampRecord.from(stamp)
                         } label: {
                             Image(systemName: "pencil")
@@ -655,7 +663,7 @@ struct PassportDataEditorSheet: View {
                         .buttonStyle(.borderless)
 
                         Button(role: .destructive) {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             borderOverrides.deleteStamp(id: stamp.id)
                         } label: {
                             Image(systemName: "trash")
@@ -668,7 +676,7 @@ struct PassportDataEditorSheet: View {
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             borderOverrides.deleteStamp(id: stamp.id)
                         } label: {
                             Label("删除", systemImage: "trash")
@@ -683,7 +691,7 @@ struct PassportDataEditorSheet: View {
         if borderOverrides.hasAnyOverrides {
             Section {
                 Button("恢复所有被隐藏/修改的自动识别记录", role: .destructive) {
-                    UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                    Haptics.warning()
                     borderOverrides.resetAutoOverrides()
                 }
             }
@@ -704,7 +712,7 @@ struct PassportDataEditorSheet: View {
                     }
                     Spacer()
                     Button(role: .destructive) {
-                        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                        Haptics.warning()
                         confirmDeleteTarget = DeleteTarget(
                             title: "「\(group.name)」的全部 \(group.stayCount) 条记录",
                             stayIDs: group.stayIDs
@@ -767,7 +775,7 @@ struct PassportDataEditorSheet: View {
                     }
                     Spacer()
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         renamingCity = group
                         newCityName = group.city
                     } label: {
@@ -781,7 +789,7 @@ struct PassportDataEditorSheet: View {
                     .buttonStyle(.borderless)
 
                     Button(role: .destructive) {
-                        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+                        Haptics.warning()
                         confirmDeleteTarget = DeleteTarget(
                             title: "「\(group.city)」的全部 \(group.stayCount) 条记录",
                             stayIDs: group.stayIDs
@@ -949,6 +957,7 @@ private struct BorderStampEditForm: View {
                             days: isEntry ? 0 : days
                         )
                         onSave(record)
+                        Haptics.success()
                         dismiss()
                     }
                 }

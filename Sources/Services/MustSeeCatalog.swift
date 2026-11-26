@@ -180,6 +180,54 @@ final class MustSeeUserStore: ObservableObject {
         customCoverIDs.remove(placeID)
         coverRevision &+= 1
     }
+
+    struct BackupSnapshot: Codable, Sendable {
+        var wishIDs: [String]
+        var manualVisits: [String: Double]
+        var excludedAutoIDs: [String]
+        var customCovers: [String: Data]?
+    }
+
+    func exportBackupSnapshot() -> BackupSnapshot {
+        var covers: [String: Data] = [:]
+        for id in customCoverIDs {
+            if let data = try? Data(contentsOf: coverURL(for: id)) {
+                covers[id] = data
+            }
+        }
+        return BackupSnapshot(
+            wishIDs: Array(wishIDs).sorted(),
+            manualVisits: manualVisits.mapValues { $0.timeIntervalSince1970 },
+            excludedAutoIDs: Array(excludedAutoIDs).sorted(),
+            customCovers: covers.isEmpty ? nil : covers
+        )
+    }
+
+    func restoreFromBackup(_ snapshot: BackupSnapshot) {
+        wishIDs = Set(snapshot.wishIDs)
+        manualVisits = snapshot.manualVisits.mapValues { Date(timeIntervalSince1970: $0) }
+        excludedAutoIDs = Set(snapshot.excludedAutoIDs)
+
+        UserDefaults.standard.set(Array(wishIDs), forKey: Keys.wish)
+        UserDefaults.standard.set(snapshot.manualVisits, forKey: Keys.manual)
+        UserDefaults.standard.set(Array(excludedAutoIDs), forKey: Keys.excluded)
+
+        if let covers = snapshot.customCovers {
+            let fm = FileManager.default
+            for oldID in customCoverIDs where covers[oldID] == nil {
+                try? fm.removeItem(at: coverURL(for: oldID))
+            }
+            coverCache.removeAll()
+            var restoredIDs = Set<String>()
+            for (placeID, data) in covers {
+                try? data.write(to: coverURL(for: placeID), options: .atomic)
+                restoredIDs.insert(placeID)
+            }
+            customCoverIDs = restoredIDs
+            coverRevision &+= 1
+        }
+        revision &+= 1
+    }
 }
 
 enum MustSee {

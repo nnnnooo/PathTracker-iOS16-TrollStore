@@ -426,7 +426,7 @@ struct StatsView: View {
                     ForEach(stats.prefix(5), id: \.mode) { item in
                         let isSelected = (selectedMode == item.mode)
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             withAnimation(.spring(response: 0.3, dampingFraction: 0.78)) {
                                 selectedMode = isSelected ? nil : item.mode
                             }

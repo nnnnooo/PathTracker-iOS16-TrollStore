@@ -258,7 +258,12 @@ struct WorldView: View {
         MetricGrid2x2 {
             MetricTile(title: "国家与地区", value: "\(hasComputedOnce ? countryStats.count : cachedSummary.countryCount)", symbol: "flag.fill", tint: .red)
         } topRight: {
-            MetricTile(title: "城市", value: "\(hasComputedOnce ? cityCount : cachedSummary.cityCount)", symbol: "building.2.fill", tint: .indigo)
+            NavigationLink {
+                PassportView(initialScope: .cities)
+            } label: {
+                MetricTile(title: "城市", value: "\(hasComputedOnce ? cityCount : cachedSummary.cityCount)", symbol: "building.2.fill", tint: .indigo, showsChevron: true)
+            }
+            .buttonStyle(.plain)
         } bottomLeft: {
             MetricTile(title: "景点", value: "\(hasComputedOnce ? landmarkStays.count : cachedSummary.landmarkCount)", symbol: "star.fill", tint: .yellow)
         } bottomRight: {
@@ -545,15 +550,15 @@ struct WorldView: View {
 
                 HStack(spacing: 14) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
                             .fill(Color.blue.opacity(0.12))
                             .frame(width: 52, height: 52)
-                        Image(systemName: "photo.badge.plus")
+                        Image(systemName: "photo.fill.on.rectangle.fill")
                             .font(.title2)
                             .foregroundColor(.blue)
                     }
 
-                    Text(tagger.progressText ?? "从相册导入历史足迹，或在时间线上点开地点记录照片和心情。")
+                    Text(tagger.progressText ?? "从相册导入历史足迹，或在时间线上点开地点记录心情。")
                         .font(.subheadline)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.leading)
@@ -562,7 +567,7 @@ struct WorldView: View {
                 }
             }
             .padding(16)
-            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .buttonStyle(PressableStyle())
     }
@@ -618,7 +623,7 @@ struct WorldView: View {
                     .font(.title3.bold())
                 Spacer()
                 Button("全部") {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     showAllFrequent = true
                 }
                 .font(.subheadline.weight(.medium))
@@ -774,7 +779,10 @@ private struct FrequentPlacesListSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") {
+                        Haptics.selection()
+                        dismiss()
+                    }
                 }
             }
         }

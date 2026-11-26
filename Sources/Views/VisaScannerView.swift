@@ -13,8 +13,7 @@ struct VisaScannerSheet: View {
                 if DataScannerViewController.isSupported && DataScannerViewController.isAvailable {
                     ZStack(alignment: .bottom) {
                         MRZCameraScanner { parsed in
-                            let gen = UINotificationFeedbackGenerator()
-                            gen.notificationOccurred(.success)
+                            Haptics.success()
                             onScanned(parsed)
                             dismiss()
                         }

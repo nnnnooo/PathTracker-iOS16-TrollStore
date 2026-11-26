@@ -142,7 +142,7 @@ struct VisaWalletView: View {
                    let image = UIImage(data: data),
                    let parsed = await MRZParser.recognize(image: image) {
                     await MainActor.run {
-                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        Haptics.success()
                         openEditor(from: parsed)
                     }
                 } else {
@@ -176,7 +176,7 @@ struct VisaWalletView: View {
             .shadow(color: .black.opacity(0.14), radius: 14, y: isSelected ? 10 : -2)
             .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
             .onTapGesture {
-                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                Haptics.light()
                 withAnimation(Self.spring) {
                     selectedID = isSelected ? nil : document.id
                     scrollProxy.scrollTo("walletTop", anchor: .top)
@@ -221,7 +221,7 @@ struct VisaWalletView: View {
                 }
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Haptics.light()
                     withAnimation(Self.spring) { selectedID = nil }
                 }
                 .ignoresSafeArea(edges: .bottom)
@@ -724,7 +724,7 @@ private struct VisaEditorSheet: View {
                     .listRowBackground(Color.clear)
                     .listRowInsets(EdgeInsets())
                     .onChange(of: document.kind) { newKind in
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         if newKind == .passport && document.countryCode == VisaCatalog.schengenCode {
                             document.countryCode = "CN"
                             document.countryName = "中国"
@@ -825,7 +825,7 @@ private struct VisaEditorSheet: View {
                         saved.visaType = saved.visaType.trimmingCharacters(in: .whitespacesAndNewlines)
                         saved.countryName = VisaCatalog.localizedName(for: saved.countryCode)
                         visaStore.upsert(saved)
-                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        Haptics.success()
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark")

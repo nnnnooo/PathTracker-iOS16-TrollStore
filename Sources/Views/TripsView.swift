@@ -3,12 +3,21 @@ import MapKit
 import Photos
 import UIKit
 
+@MainActor
+private final class TripsComputedCache {
+    static let shared = TripsComputedCache()
+    var signature: String = ""
+    var discovered: [TripsView.DiscoveredCardData] = []
+    var yearGroups: [TripsView.YearGroupModel] = []
+    var recordingCards: [TripsView.TripCardModel] = []
+}
+
 struct TripsView: View {
     @Binding var showingSettings: Bool
     @EnvironmentObject private var store: DataStore
     @EnvironmentObject private var engine: LocationEngine
 
-    private struct DiscoveredCardData: Identifiable, Sendable {
+    fileprivate struct DiscoveredCardData: Identifiable, Sendable {
         let item: TripFinder.DiscoveredTrip
         let coordinates: [CLLocationCoordinate2D]
         var id: String { item.id }
@@ -32,7 +41,7 @@ struct TripsView: View {
         var id: UUID { trip.id }
     }
 
-    private struct YearGroupModel: Identifiable, Sendable {
+    fileprivate struct YearGroupModel: Identifiable, Sendable {
         let year: Int
         let totalDays: Int
         let cards: [TripCardModel]
@@ -45,10 +54,10 @@ struct TripsView: View {
     @State private var showNewTrip = false
     @State private var showAllDiscovered = false
     @State private var dismissedDiscoveredIDs: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "wt16.trips.dismissedDiscovered") ?? [])
-    @State private var discovered: [DiscoveredCardData] = []
-    @State private var yearGroups: [YearGroupModel] = []
-    @State private var recordingCards: [TripCardModel] = []
-    @State private var hasLoadedOnce = false
+    @State private var discovered: [DiscoveredCardData] = TripsComputedCache.shared.discovered
+    @State private var yearGroups: [YearGroupModel] = TripsComputedCache.shared.yearGroups
+    @State private var recordingCards: [TripCardModel] = TripsComputedCache.shared.recordingCards
+    @State private var hasLoadedOnce: Bool = !TripsComputedCache.shared.signature.isEmpty
 
     private var visibleDiscovered: [DiscoveredCardData] {
         discovered.filter { !dismissedDiscoveredIDs.contains($0.id) }
@@ -187,6 +196,10 @@ struct TripsView: View {
                 )
             }
             .task(id: "\(store.stays.count)-\(store.trips.count)-\(store.chunks.count)") {
+                let sig = "\(store.stays.count)-\(store.trips.count)-\(store.chunks.count)"
+                if TripsComputedCache.shared.signature == sig && hasLoadedOnce {
+                    return
+                }
                 let staysSnapshot = store.stays
                 let tripsSnapshot = store.trips
                 let chunksSnapshot = store.chunks
@@ -253,6 +266,10 @@ struct TripsView: View {
                     return (discCards, years, recs)
                 }.value
 
+                TripsComputedCache.shared.signature = sig
+                TripsComputedCache.shared.discovered = computed.0
+                TripsComputedCache.shared.yearGroups = computed.1
+                TripsComputedCache.shared.recordingCards = computed.2
                 discovered = computed.0
                 yearGroups = computed.1
                 recordingCards = computed.2
@@ -278,10 +295,8 @@ struct TripsView: View {
     private func yearChip(title: String, count: Int, value: Int) -> some View {
         let selected = selectedYear == value
         return Button {
-            UISelectionFeedbackGenerator().selectionChanged()
-            withAnimation(.easeInOut(duration: 0.2)) {
-                selectedYear = value
-            }
+            Haptics.selection()
+            selectedYear = value
         } label: {
             HStack(spacing: 5) {
                 Text(title)
@@ -297,6 +312,7 @@ struct TripsView: View {
                 selected ? Color.blue : Color(.secondarySystemGroupedBackground),
                 in: Capsule()
             )
+            .animation(.easeInOut(duration: 0.16), value: selected)
         }
         .buttonStyle(.plain)
     }
@@ -340,7 +356,7 @@ struct TripsView: View {
                 }
                 Spacer()
                 Button("查看全部") {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     showAllDiscovered = true
                 }
                 .font(.subheadline.weight(.semibold))
@@ -363,7 +379,7 @@ struct TripsView: View {
     }
 
     private func dismissDiscovered(_ id: String) {
-        UISelectionFeedbackGenerator().selectionChanged()
+        Haptics.selection()
         withAnimation(.easeInOut(duration: 0.22)) {
             _ = dismissedDiscoveredIDs.insert(id)
         }
@@ -432,15 +448,82 @@ private final class TripCardMapCache {
     static let shared = TripCardMapCache()
     private var cache: [String: TripCardMapResult] = [:]
     private let lock = NSLock()
+    private let diskDir: URL
+
+    private struct DiskPins: Codable {
+        let xs: [Double]
+        let ys: [Double]
+    }
+
+    private init() {
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        diskDir = caches.appendingPathComponent("TripCardMaps", isDirectory: true)
+        try? FileManager.default.createDirectory(at: diskDir, withIntermediateDirectories: true)
+    }
+
+    private func safeKey(_ key: String) -> String {
+        key.replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: ":", with: "_")
+    }
 
     func get(_ key: String) -> TripCardMapResult? {
         lock.lock(); defer { lock.unlock() }
         return cache[key]
     }
 
+    func loadFromDisk(_ key: String) -> TripCardMapResult? {
+        if let mem = get(key) { return mem }
+        let safe = safeKey(key)
+        let imgURL = diskDir.appendingPathComponent("\(safe).jpg")
+        let pinURL = diskDir.appendingPathComponent("\(safe).json")
+        guard let imgData = try? Data(contentsOf: imgURL), let img = UIImage(data: imgData) else { return nil }
+        var pins: [CGPoint] = []
+        if let pinData = try? Data(contentsOf: pinURL),
+           let decoded = try? JSONDecoder().decode(DiskPins.self, from: pinData) {
+            pins = zip(decoded.xs, decoded.ys).map { CGPoint(x: $0, y: $1) }
+        }
+        let result = TripCardMapResult(image: img, pins: pins)
+        lock.lock()
+        if cache.count > 160 { cache.removeAll() }
+        cache[key] = result
+        lock.unlock()
+        return result
+    }
+
     func set(_ value: TripCardMapResult, for key: String) {
+        lock.lock()
+        if cache.count > 160 { cache.removeAll() }
+        cache[key] = value
+        lock.unlock()
+
+        let safe = safeKey(key)
+        let imgURL = diskDir.appendingPathComponent("\(safe).jpg")
+        let pinURL = diskDir.appendingPathComponent("\(safe).json")
+        let pins = DiskPins(xs: value.pins.map { Double($0.x) }, ys: value.pins.map { Double($0.y) })
+        DispatchQueue.global(qos: .utility).async {
+            if let data = value.image.jpegData(compressionQuality: 0.84) {
+                try? data.write(to: imgURL, options: .atomic)
+            }
+            if let pinData = try? JSONEncoder().encode(pins) {
+                try? pinData.write(to: pinURL, options: .atomic)
+            }
+        }
+    }
+}
+
+private final class TripCardPhotoCache {
+    static let shared = TripCardPhotoCache()
+    private var cache: [String: (count: Int, photos: [UIImage])] = [:]
+    private let lock = NSLock()
+
+    func get(_ key: String) -> (count: Int, photos: [UIImage])? {
         lock.lock(); defer { lock.unlock() }
-        if cache.count > 120 { cache.removeAll() }
+        return cache[key]
+    }
+
+    func set(_ value: (count: Int, photos: [UIImage]), for key: String) {
+        lock.lock(); defer { lock.unlock() }
+        if cache.count > 160 { cache.removeAll() }
         cache[key] = value
     }
 }
@@ -450,19 +533,48 @@ private struct OriginalTripCardView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @State private var mapResult: TripCardMapResult?
-    @State private var pilePhotos: [UIImage] = []
-    @State private var photoCount: Int = 0
+    @State private var pilePhotos: [UIImage]
+    @State private var photoCount: Int
 
     private let mapHeight: CGFloat = 200
 
     private var trip: Trip { model.trip }
 
+    private static func photoCacheKey(for trip: Trip) -> String {
+        "\(trip.id.uuidString)-\(Int(trip.startDate.timeIntervalSince1970))-\(Int((trip.endDate ?? trip.startDate).timeIntervalSince1970))"
+    }
+
+    private static func mapCacheKey(for model: TripsView.TripCardModel, isDark: Bool) -> String {
+        let pins = Array(model.cities.prefix(4).map(\.center))
+        let fallbackCount = pins.isEmpty ? model.coordinates.count : pins.count
+        return "\(model.trip.id.uuidString)-\(isDark)-\(fallbackCount)"
+    }
+
+    init(model: TripsView.TripCardModel) {
+        self.model = model
+        let pKey = Self.photoCacheKey(for: model.trip)
+        if let cachedPhotos = TripCardPhotoCache.shared.get(pKey) {
+            _photoCount = State(initialValue: cachedPhotos.count)
+            _pilePhotos = State(initialValue: cachedPhotos.photos)
+        } else {
+            _photoCount = State(initialValue: 0)
+            _pilePhotos = State(initialValue: [])
+        }
+        let lightKey = Self.mapCacheKey(for: model, isDark: false)
+        let darkKey = Self.mapCacheKey(for: model, isDark: true)
+        let preseeded = TripCardMapCache.shared.get(lightKey) ?? TripCardMapCache.shared.get(darkKey)
+        _mapResult = State(initialValue: preseeded)
+    }
+
     var body: some View {
+        let currentKey = Self.mapCacheKey(for: model, isDark: colorScheme == .dark)
+        let resolvedMap = TripCardMapCache.shared.get(currentKey) ?? mapResult
+
         VStack(spacing: 0) {
             GeometryReader { geo in
                 ZStack(alignment: .topLeading) {
-                    if let mapResult {
-                        Image(uiImage: mapResult.image)
+                    if let resolvedMap {
+                        Image(uiImage: resolvedMap.image)
                             .resizable()
                             .scaledToFill()
                             .frame(width: geo.size.width, height: geo.size.height)
@@ -475,8 +587,8 @@ private struct OriginalTripCardView: View {
                     }
 
                     // 城市悬浮标签 + 橙/蓝圆点
-                    if let mapResult {
-                        ForEach(Array(placedTags(result: mapResult, size: geo.size).enumerated()), id: \.offset) { idx, item in
+                    if let resolvedMap {
+                        ForEach(Array(placedTags(result: resolvedMap, size: geo.size).enumerated()), id: \.offset) { idx, item in
                             TripCityTagView(name: item.name, prominent: idx == 0)
                                 .position(x: item.point.x, y: item.point.y - 14)
                         }
@@ -565,10 +677,12 @@ private struct OriginalTripCardView: View {
         let isDark = colorScheme == .dark
         let pins = Array(model.cities.prefix(4).map(\.center))
         let fallbackCoords = pins.isEmpty ? model.coordinates : pins
-        let key = "\(trip.id.uuidString)-\(isDark)-\(fallbackCoords.count)"
+        let key = Self.mapCacheKey(for: model, isDark: isDark)
 
-        if let cached = TripCardMapCache.shared.get(key) {
-            mapResult = cached
+        if let mem = TripCardMapCache.shared.get(key) {
+            mapResult = mem
+        } else if let disk = await Task.detached(priority: .userInitiated, operation: { TripCardMapCache.shared.loadFromDisk(key) }).value {
+            mapResult = disk
         } else if let region = Self.region(around: fallbackCoords) {
             let size = CGSize(width: max(UIScreen.main.bounds.width - 32, 300), height: mapHeight)
             if let rendered = await Self.renderMap(region: region, size: size, pins: pins, dark: isDark) {
@@ -577,13 +691,24 @@ private struct OriginalTripCardView: View {
             }
         }
 
+        let pKey = Self.photoCacheKey(for: trip)
+        if let cachedPhotos = TripCardPhotoCache.shared.get(pKey) {
+            photoCount = cachedPhotos.count
+            pilePhotos = cachedPhotos.photos
+            return
+        }
+
         let auth = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard auth == .authorized || auth == .limited else { return }
         let start = trip.startDate
         let end = trip.endDate ?? Date()
         let found = await TripPhotoFetcher.fetchAssets(from: start, to: end)
-        photoCount = found.count
-        guard !found.isEmpty else { return }
+        let count = found.count
+        photoCount = count
+        guard !found.isEmpty else {
+            TripCardPhotoCache.shared.set((0, []), for: pKey)
+            return
+        }
         let favs = found.filter(\.isFavorite)
         let pool = favs.count >= 3 ? favs : found
         let step = max(1, pool.count / 3)
@@ -594,6 +719,7 @@ private struct OriginalTripCardView: View {
                 thumbs.append(img)
             }
         }
+        TripCardPhotoCache.shared.set((count, thumbs), for: pKey)
         pilePhotos = thumbs
     }
 
@@ -674,6 +800,9 @@ private struct TripCityTagView: View {
 
 private struct TripMiniPhotoPile: View {
     let images: [UIImage]
+    @State private var appeared = false
+
+    private static let angles: [Double] = [-8.0, 6.0, -2.0]
 
     var body: some View {
         ZStack {
@@ -685,11 +814,25 @@ private struct TripMiniPhotoPile: View {
                     .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(Color.white, lineWidth: 2.2))
                     .shadow(color: .black.opacity(0.24), radius: 4, y: 2)
-                    .rotationEffect(.degrees([-8.0, 6.0, -2.0][index]))
-                    .offset(x: CGFloat(index) * -22, y: CGFloat(index) * 2)
+                    .rotationEffect(.degrees(appeared ? Self.angles[index] : 0))
+                    .offset(
+                        x: appeared ? CGFloat(index) * -22 : 0,
+                        y: appeared ? CGFloat(index) * 2 : 14
+                    )
+                    .scaleEffect(appeared ? 1.0 : 0.78)
+                    .opacity(appeared ? 1.0 : 0.0)
+                    .animation(
+                        .spring(response: 0.44, dampingFraction: 0.78)
+                            .delay(Double(index) * 0.06),
+                        value: appeared
+                    )
             }
         }
         .padding(.leading, 44)
+        .onAppear {
+            guard !appeared else { return }
+            appeared = true
+        }
     }
 }
 
@@ -825,7 +968,7 @@ private struct DiscoveredTripPhotoCard: View {
                 }
 
                 Button {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    Haptics.medium()
                     onSave()
                 } label: {
                     Label("收进旅程", systemImage: "plus")
@@ -876,7 +1019,7 @@ private struct AllDiscoveredTripsSheet: View {
                         }
                         Spacer()
                         Button("收进旅程") {
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            Haptics.medium()
                             onSave(item)
                         }
                         .buttonStyle(.bordered)
@@ -898,14 +1041,17 @@ private struct AllDiscoveredTripsSheet: View {
                 ToolbarItem(placement: .navigationBarLeading) {
                     if !items.isEmpty {
                         Button("全部收下") {
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            Haptics.success()
                             for item in items { onSave(item) }
                             dismiss()
                         }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") {
+                        Haptics.selection()
+                        dismiss()
+                    }
                 }
             }
         }
@@ -1152,7 +1298,6 @@ struct TripDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     let trip: Trip
-    @State private var notesDraft: String
     @State private var showFullMap = false
     @State private var showEditSheet = false
     @State private var showDeleteConfirm = false
@@ -1160,11 +1305,6 @@ struct TripDetailView: View {
     @State private var shareActivityURL: URL?
     @State private var tripPhotos: [PhotoPreviewItem] = []
     @State private var totalPhotoCount: Int = 0
-
-    init(trip: Trip) {
-        self.trip = trip
-        _notesDraft = State(initialValue: trip.notes)
-    }
 
     private var currentTrip: Trip {
         store.trips.first { $0.id == trip.id } ?? trip
@@ -1267,25 +1407,26 @@ struct TripDetailView: View {
                     }
                 }
 
-                // 4. 备注（原版内联输入框）
+                // 4. 备注（详情页仅只读展示，点击右上角「···」进入编辑页面修改）
                 VStack(alignment: .leading, spacing: 10) {
                     Text("备注")
                         .font(.title3.bold())
                         .padding(.horizontal, 4)
 
-                    TextField(activeTrip.isRecording ? "记下这次的感受…" : "记下这段旅程的故事…", text: $notesDraft, axis: .vertical)
-                        .lineLimit(3...10)
-                        .padding(16)
-                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                        .onChange(of: notesDraft) { newVal in
-                            saveNotes(newVal)
-                        }
+                    let trimmedNotes = activeTrip.notes.trimmingCharacters(in: .whitespacesAndNewlines)
+                    Text(trimmedNotes.isEmpty ? "暂无备注，可在编辑页面添加" : trimmedNotes)
+                        .font(.body)
+                        .foregroundColor(trimmedNotes.isEmpty ? .secondary : .primary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
                 }
 
                 // 5. 旅行明信片卡片（1:1 原版 PostcardInvite 样式）
                 if !activeTrip.isActive && !stays.isEmpty {
                     Button {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Haptics.light()
                         if let url = ShareCardGenerator.renderTripCard(
                             trip: activeTrip,
                             distance: totalDistance,
@@ -1399,7 +1540,7 @@ struct TripDetailView: View {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Menu {
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         showEditSheet = true
                     } label: {
                         Label("编辑", systemImage: "pencil")
@@ -1487,7 +1628,6 @@ struct TripDetailView: View {
             Button("取消", role: .cancel) {}
         }
         .task(id: "\(activeTrip.id.uuidString)-\(activeTrip.startDate.timeIntervalSince1970)-\(activeTrip.endDate?.timeIntervalSince1970 ?? 0)") {
-            notesDraft = activeTrip.notes
             await loadTripPhotos(activeTrip)
         }
     }
@@ -1569,12 +1709,6 @@ struct TripDetailView: View {
         tripPhotos = loaded
     }
 
-    private func saveNotes(_ newValue: String) {
-        var updated = currentTrip
-        guard updated.notes != newValue else { return }
-        updated.notes = newValue
-        store.upsertTrip(updated)
-    }
 
     private static func cnDistance(_ meters: Double) -> String {
         if meters >= 1000 {
@@ -1703,7 +1837,7 @@ struct EditTripSheet: View {
                                     ForEach(Self.emojiChoices, id: \.self) { emoji in
                                         let selected = coverEmoji == emoji
                                         Button {
-                                            UISelectionFeedbackGenerator().selectionChanged()
+                                            Haptics.selection()
                                             coverEmoji = emoji
                                         } label: {
                                             Text(emoji)
@@ -1790,7 +1924,7 @@ struct EditTripSheet: View {
                         updated.endDate = max(startDate, endDate)
                         updated.notes = notes.trimmingCharacters(in: .whitespacesAndNewlines)
                         store.upsertTrip(updated)
-                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        Haptics.success()
                         dismiss()
                     } label: {
                         Image(systemName: "checkmark")
@@ -1845,7 +1979,7 @@ struct NewRecordingSheet: View {
                 Spacer()
 
                 Button {
-                    UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    Haptics.medium()
                     let finalTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                     engine.beginRecording(activity: activity, title: finalTitle.isEmpty ? defaultPlaceholder : finalTitle)
                     dismiss()
@@ -1866,7 +2000,7 @@ struct NewRecordingSheet: View {
                     ForEach(ActivityType.allCases) { item in
                         let selected = activity == item
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             withAnimation(.easeInOut(duration: 0.18)) {
                                 activity = item
                             }
@@ -1951,6 +2085,7 @@ struct NewTripSheet: View {
                         let e = cal.date(byAdding: .day, value: 1, to: cal.startOfDay(for: endDate)) ?? endDate
                         let name = title.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? "未命名旅程"
                         store.upsertTrip(Trip(title: name, startDate: s, endDate: e, notes: notes, coverEmoji: "🧳"))
+                        Haptics.success()
                         dismiss()
                     }
                 }

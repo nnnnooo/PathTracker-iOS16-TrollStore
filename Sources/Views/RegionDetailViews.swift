@@ -400,7 +400,7 @@ struct CountryDetailView: View {
                     HStack(spacing: 10) {
                         if remaining > 0 {
                             Button {
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selection()
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     visibleCityStampCount += 18
                                 }
@@ -420,7 +420,7 @@ struct CountryDetailView: View {
                         }
                         if visibleCityStampCount > 9 {
                             Button {
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selection()
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     visibleCityStampCount = 9
                                 }
@@ -704,7 +704,7 @@ struct StintsByYearSection: View {
                         ForEach(years, id: \.year) { item in
                             let on = activeYear == item.year
                             Button {
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selection()
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     selectedYear = item.year
                                     selectedMonth = nil
@@ -755,7 +755,7 @@ struct StintsByYearSection: View {
                                     CityStintView(stint: stint)
                                 }
                             } label: {
-                                CityStintRow(stint: stint)
+                                CityStintRow(stint: stint, peerStints: group.stints)
                             }
                             .buttonStyle(.plain)
 
@@ -770,7 +770,7 @@ struct StintsByYearSection: View {
 
             if remaining > 0 {
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.easeInOut(duration: 0.2)) {
                         visibleLimit += 25
                     }
@@ -805,7 +805,7 @@ struct StintsByYearSection: View {
                 let fraction = d > 0 ? max(0.16, CGFloat(d) / CGFloat(maxDays)) : 0
                 Button {
                     guard d > 0 else { return }
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.easeInOut(duration: 0.2)) {
                         selectedMonth = isSelected ? nil : m
                         visibleLimit = 20
@@ -849,6 +849,7 @@ struct StintsByYearSection: View {
 
 private struct CityStintRow: View {
     let stint: CityStint
+    var peerStints: [CityStint] = []
     @State private var photoItem: PhotoPreviewItem?
     @State private var photoCount: Int = 0
 
@@ -901,7 +902,7 @@ private struct CityStintRow: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 11)
         .task(id: stint.id) {
-            let result = await StintPhotoFetcher.shared.stintPhotoItem(for: stint)
+            let result = await StintPhotoFetcher.shared.stintPhotoItem(for: stint, among: peerStints)
             guard !Task.isCancelled else { return }
             photoItem = result.item
             photoCount = result.count
@@ -1065,10 +1066,35 @@ struct DayDetailPage: View {
             case .move(let c): return c.startDate
             }
         }
+
+        var endDate: Date {
+            switch self {
+            case .stay(let s): return s.departure ?? Date.distantFuture
+            case .move(let c): return c.endDate
+            }
+        }
+    }
+
+    private static func isEarlier(_ lhs: Entry, _ rhs: Entry) -> Bool {
+        let lEnd = lhs.endDate
+        let rEnd = rhs.endDate
+        if abs(lEnd.timeIntervalSince(rEnd)) > 90 {
+            return lEnd < rEnd
+        }
+        switch (lhs, rhs) {
+        case (.stay(let s), .move(let c)):
+            let dep = s.departure ?? Date.distantFuture
+            return abs(c.endDate.timeIntervalSince(dep)) <= abs(c.endDate.timeIntervalSince(s.arrival))
+        case (.move(let c), .stay(let s)):
+            let dep = s.departure ?? Date.distantFuture
+            return abs(c.endDate.timeIntervalSince(s.arrival)) < abs(c.endDate.timeIntervalSince(dep))
+        default:
+            return lhs.sortDate < rhs.sortDate
+        }
     }
 
     private var entries: [Entry] {
-        let sorted = (dayStays.map(Entry.stay) + dayChunks.map(Entry.move)).sorted { $0.sortDate < $1.sortDate }
+        let sorted = (dayStays.map(Entry.stay) + dayChunks.map(Entry.move)).sorted(by: Self.isEarlier)
         return newestFirst ? sorted.reversed() : sorted
     }
 
@@ -1106,7 +1132,7 @@ struct DayDetailPage: View {
                     Text("时间线").font(.title3.bold())
                     Spacer()
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.easeInOut(duration: 0.2)) { newestFirst.toggle() }
                     } label: {
                         Label(newestFirst ? "最新在前" : "最早在前", systemImage: "arrow.up.arrow.down")
@@ -1120,7 +1146,7 @@ struct DayDetailPage: View {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { idx, entry in
                         switch entry {
                         case .stay(let stay):
-                            DayDetailStayRow(stay: stay, isFirst: idx == 0, isLast: idx == entries.count - 1)
+                            DayDetailStayRow(stay: stay, day: date, dayStays: dayStays, isFirst: idx == 0, isLast: idx == entries.count - 1)
                                 .contentShape(Rectangle())
                                 .onTapGesture { selectedStay = stay }
                         case .move(let chunk):
@@ -1176,24 +1202,54 @@ struct DayDetailPage: View {
 
 private struct DayDetailStayRow: View {
     let stay: Stay
+    let day: Date
+    let dayStays: [Stay]
     let isFirst: Bool
     let isLast: Bool
 
     @State private var photos: [PhotoPreviewItem] = []
 
+    private func dayOffset(of target: Date) -> Int {
+        let cal = Calendar.current
+        return cal.dateComponents([.day], from: cal.startOfDay(for: day), to: cal.startOfDay(for: target)).day ?? 0
+    }
+
+    @ViewBuilder
+    private func timeWithDayBadge(_ date: Date, font: Font, color: Color) -> some View {
+        let offset = dayOffset(of: date)
+        HStack(alignment: .center, spacing: 3) {
+            if offset != 0 {
+                Text(offset > 0 ? "+\(offset)" : "\(offset)")
+                    .font(.system(size: 9, weight: .semibold, design: .rounded))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 3.5)
+                    .padding(.vertical, 1)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
+                    .fixedSize()
+            }
+            Text(Formatters.timeHM(date))
+                .font(font)
+                .foregroundColor(color)
+                .fixedSize()
+        }
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .trailing, spacing: 2) {
-                Text(Formatters.timeHM(stay.arrival))
-                    .font(.subheadline.weight(.semibold))
                 if let dep = stay.departure {
-                    Text(Formatters.timeHM(dep))
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    timeWithDayBadge(dep, font: .subheadline.weight(.semibold), color: .primary)
+                } else {
+                    Text("现在")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                        .fixedSize()
                 }
+                timeWithDayBadge(stay.arrival, font: .caption, color: .secondary)
             }
             .monospacedDigit()
-            .frame(width: 46, alignment: .trailing)
+            .lineLimit(1)
+            .frame(width: 62, alignment: .trailing)
             .padding(.top, 12)
 
             ZStack(alignment: .top) {
@@ -1254,7 +1310,7 @@ private struct DayDetailStayRow: View {
             .padding(.bottom, 10)
         }
         .task(id: stay.id) {
-            photos = await StintPhotoFetcher.shared.stayPhotoItems(for: stay)
+            photos = await StintPhotoFetcher.shared.stayPhotoItems(for: stay, among: dayStays)
         }
     }
 }
@@ -1264,7 +1320,7 @@ private struct DayDetailMoveRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Color.clear.frame(width: 46)
+            Color.clear.frame(width: 62)
             Rectangle()
                 .fill(chunk.mode.color.opacity(0.75))
                 .frame(width: 3)
@@ -1286,11 +1342,16 @@ private struct DayDetailMoveRow: View {
     }
 }
 
-// MARK: - Orange City Glow Map (Proper Framing Margin so Corner Cities Are Never Clipped)
+// MARK: - Orange City Glow Map (Native Frosted Glass Pills + 4-Direction Anti-Overlap Placement)
+
+private enum CityPillPlacement {
+    case above, below, right, left
+}
 
 private final class CityGlowAnnotation: NSObject, MKAnnotation {
     let spot: CityGlowSpot
     var showLabel: Bool
+    var placement: CityPillPlacement = .above
     dynamic var coordinate: CLLocationCoordinate2D
 
     init(spot: CityGlowSpot, showLabel: Bool) {
@@ -1301,22 +1362,61 @@ private final class CityGlowAnnotation: NSObject, MKAnnotation {
 }
 
 private final class CityGlowAnnotationView: MKAnnotationView {
-    private let pillView = UIImageView()
+    private let glassContainer = UIView()
+    private let blurView = UIVisualEffectView(effect: UIBlurEffect(style: .systemUltraThinMaterial))
+    private let titleLabel = UILabel()
+    private let subtitleLabel = UILabel()
     private var isLabelVisible = false
+    private var currentPlacement: CityPillPlacement = .above
+    private var currentPillSize: CGSize = .zero
 
     override init(annotation: MKAnnotation?, reuseIdentifier: String?) {
         super.init(annotation: annotation, reuseIdentifier: reuseIdentifier)
         canShowCallout = false
         displayPriority = .required
         clipsToBounds = false
-        pillView.alpha = 0
-        pillView.isHidden = true
-        pillView.isUserInteractionEnabled = false
-        addSubview(pillView)
+
+        glassContainer.isUserInteractionEnabled = false
+        glassContainer.alpha = 0
+        glassContainer.isHidden = true
+        glassContainer.layer.shadowColor = UIColor.black.cgColor
+        glassContainer.layer.shadowOpacity = 0.14
+        glassContainer.layer.shadowRadius = 6
+        glassContainer.layer.shadowOffset = CGSize(width: 0, height: 2)
+
+        blurView.clipsToBounds = true
+        blurView.layer.cornerRadius = 12
+        blurView.layer.cornerCurve = .continuous
+        blurView.layer.borderWidth = 0.6
+        blurView.layer.borderColor = UIColor.white.withAlphaComponent(0.35).cgColor
+        glassContainer.addSubview(blurView)
+
+        titleLabel.font = UIFont.systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .label
+        titleLabel.textAlignment = .center
+        titleLabel.lineBreakMode = .byTruncatingTail
+
+        subtitleLabel.font = UIFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)
+        subtitleLabel.textColor = .secondaryLabel
+        subtitleLabel.textAlignment = .center
+
+        blurView.contentView.addSubview(titleLabel)
+        blurView.contentView.addSubview(subtitleLabel)
+        addSubview(glassContainer)
     }
 
     required init?(coder aDecoder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    static func pillSize(for spot: CityGlowSpot) -> CGSize {
+        let titleAttrs: [NSAttributedString.Key: Any] = [.font: UIFont.systemFont(ofSize: 12, weight: .semibold)]
+        let subAttrs: [NSAttributedString.Key: Any] = [.font: UIFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium)]
+        let tw = min(140, ceil((spot.name as NSString).size(withAttributes: titleAttrs).width))
+        let th = ceil((spot.name as NSString).size(withAttributes: titleAttrs).height)
+        let sw = ceil(("\(spot.days) 天" as NSString).size(withAttributes: subAttrs).width)
+        let sh = ceil(("\(spot.days) 天" as NSString).size(withAttributes: subAttrs).height)
+        return CGSize(width: max(tw, sw) + 18, height: th + sh + 10)
     }
 
     func setDotImage(_ dot: UIImage) {
@@ -1327,63 +1427,78 @@ private final class CityGlowAnnotationView: MKAnnotationView {
         }
     }
 
-    func setLabel(visible: Bool, pillImage: UIImage?, animated: Bool, rank: Int = 0) {
-        if let pillImage {
-            pillView.image = pillImage
-            pillView.bounds = CGRect(origin: .zero, size: pillImage.size)
-            positionPill()
-        }
+    func configureLabel(spot: CityGlowSpot, visible: Bool, placement: CityPillPlacement, animated: Bool, rank: Int = 0) {
+        let size = Self.pillSize(for: spot)
+        currentPillSize = size
+        currentPlacement = placement
+
+        titleLabel.text = spot.name
+        subtitleLabel.text = "\(spot.days) 天"
+        glassContainer.bounds = CGRect(origin: .zero, size: size)
+        blurView.frame = glassContainer.bounds
+        let titleH: CGFloat = 15
+        let subH: CGFloat = 13
+        titleLabel.frame = CGRect(x: 9, y: 4, width: size.width - 18, height: titleH)
+        subtitleLabel.frame = CGRect(x: 9, y: 4 + titleH + 1, width: size.width - 18, height: subH)
+        positionPill()
+
         if visible {
-            // 停留天数更多的城市层级更靠前，边缘轻微叠层时核心城市文字始终完整可见
             zPriority = MKAnnotationViewZPriority(rawValue: max(500, 1000 - Float(rank) * 15))
         } else {
             zPriority = .defaultUnselected
         }
+
         guard isLabelVisible != visible else { return }
         isLabelVisible = visible
 
         if visible {
-            pillView.isHidden = false
+            glassContainer.isHidden = false
             if animated {
-                pillView.alpha = 0
-                pillView.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+                glassContainer.alpha = 0
+                glassContainer.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
                 UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut, .beginFromCurrentState]) {
-                    self.pillView.alpha = 1
-                    self.pillView.transform = .identity
+                    self.glassContainer.alpha = 1
+                    self.glassContainer.transform = .identity
                 }
             } else {
-                pillView.alpha = 1
-                pillView.transform = .identity
+                glassContainer.alpha = 1
+                glassContainer.transform = .identity
             }
         } else {
             if animated {
                 UIView.animate(withDuration: 0.16, delay: 0, options: [.curveEaseIn, .beginFromCurrentState], animations: {
-                    self.pillView.alpha = 0
-                    self.pillView.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
+                    self.glassContainer.alpha = 0
+                    self.glassContainer.transform = CGAffineTransform(scaleX: 0.94, y: 0.94)
                 }) { finished in
                     if finished && !self.isLabelVisible {
-                        self.pillView.isHidden = true
-                        self.pillView.transform = .identity
+                        self.glassContainer.isHidden = true
+                        self.glassContainer.transform = .identity
                     }
                 }
             } else {
-                pillView.alpha = 0
-                pillView.isHidden = true
-                pillView.transform = .identity
+                glassContainer.alpha = 0
+                glassContainer.isHidden = true
+                glassContainer.transform = .identity
             }
         }
     }
 
-    func refreshPillImage(_ pillImage: UIImage) {
-        pillView.image = pillImage
-        pillView.bounds = CGRect(origin: .zero, size: pillImage.size)
-        positionPill()
-    }
-
     private func positionPill() {
-        let pillSize = pillView.bounds.size
-        guard pillSize.width > 0 else { return }
-        pillView.center = CGPoint(x: bounds.midX, y: -pillSize.height / 2 - 2)
+        let s = currentPillSize
+        guard s.width > 0 else { return }
+        let gap: CGFloat = 12
+        let cx = bounds.midX
+        let cy = bounds.midY
+        switch currentPlacement {
+        case .above:
+            glassContainer.center = CGPoint(x: cx, y: cy - gap - s.height / 2)
+        case .below:
+            glassContainer.center = CGPoint(x: cx, y: cy + gap + s.height / 2)
+        case .right:
+            glassContainer.center = CGPoint(x: cx + gap + s.width / 2, y: cy)
+        case .left:
+            glassContainer.center = CGPoint(x: cx - gap - s.width / 2, y: cy)
+        }
     }
 }
 
@@ -1412,7 +1527,6 @@ private struct CityGlowMKMapView: UIViewRepresentable {
         let isDark = (colorScheme == .dark)
         if context.coordinator.isDark != isDark {
             context.coordinator.isDark = isDark
-            context.coordinator.refreshPillAppearance(in: map)
         }
 
         let sig = "\(countryCode ?? "")|\(spots.count)|\(spots.first?.id ?? "")"
@@ -1442,7 +1556,6 @@ private struct CityGlowMKMapView: UIViewRepresentable {
             }
         }
 
-        // Add all city annotations (labels will be dynamically assigned on zoom/pan)
         let annotations = validSpots.map { CityGlowAnnotation(spot: $0, showLabel: false) }
         context.coordinator.allAnnotations = annotations
         map.addAnnotations(annotations)
@@ -1499,60 +1612,85 @@ private struct CityGlowMKMapView: UIViewRepresentable {
         var isDark = false
         var allAnnotations: [CityGlowAnnotation] = []
         private var dotCache: [Int: UIImage] = [:]
-        private var pillCache: [String: UIImage] = [:]
 
         func mapView(_ mapView: MKMapView, regionDidChangeAnimated animated: Bool) {
             refreshDynamicLabels(in: mapView, animated: true)
         }
 
-        /// Immediately re-renders all visible city pills when system Light/Dark mode toggles.
-        func refreshPillAppearance(in mapView: MKMapView) {
-            for ann in allAnnotations where ann.showLabel {
-                if let view = mapView.view(for: ann) as? CityGlowAnnotationView {
-                    view.refreshPillImage(renderPillImage(spot: ann.spot))
-                }
+        private static func candidateRect(for pt: CGPoint, size: CGSize, placement: CityPillPlacement) -> CGRect {
+            let gap: CGFloat = 12
+            let center: CGPoint
+            switch placement {
+            case .above: center = CGPoint(x: pt.x, y: pt.y - gap - size.height / 2)
+            case .below: center = CGPoint(x: pt.x, y: pt.y + gap + size.height / 2)
+            case .right: center = CGPoint(x: pt.x + gap + size.width / 2, y: pt.y)
+            case .left:  center = CGPoint(x: pt.x - gap - size.width / 2, y: pt.y)
             }
+            return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2, width: size.width, height: size.height)
         }
 
-        /// Dynamically picks city labels inside the current visible viewport:
-        /// allows gentle edge overlapping for a rich footprint feel while preventing full text occlusion.
+        /// Dynamically places frosted-glass city pills in 4 directions (above -> below -> right -> left)
+        /// avoiding both other pills and every visible glowing dot.
         func refreshDynamicLabels(in mapView: MKMapView, animated: Bool) {
             guard !allAnnotations.isEmpty, mapView.bounds.width > 10 else { return }
             let visibleRect = mapView.visibleMapRect
-            let bounds = mapView.bounds
+            let safeBounds = mapView.bounds.insetBy(dx: 8, dy: 8)
 
-            var occupiedCores: [CGRect] = []
-            var visibleLabelCount = 0
-            let maxLabels = 16
-
+            var dotRects: [(ObjectIdentifier, CGRect)] = []
+            var visiblePoints: [ObjectIdentifier: CGPoint] = [:]
             for ann in allAnnotations {
                 let mp = MKMapPoint(ann.coordinate)
-                var shouldShow = false
+                guard visibleRect.contains(mp) else { continue }
+                let pt = mapView.convert(ann.coordinate, toPointTo: mapView)
+                if mapView.bounds.contains(pt) {
+                    let oid = ObjectIdentifier(ann)
+                    visiblePoints[oid] = pt
+                    dotRects.append((oid, CGRect(x: pt.x - 10, y: pt.y - 10, width: 20, height: 20)))
+                }
+            }
+
+            var occupiedPills: [CGRect] = []
+            var visibleLabelCount = 0
+            let maxLabels = 16
+            let order: [CityPillPlacement] = [.above, .below, .right, .left]
+
+            for ann in allAnnotations {
+                let oid = ObjectIdentifier(ann)
+                var chosenPlacement: CityPillPlacement? = nil
                 var rank = visibleLabelCount
-                if visibleLabelCount < maxLabels, visibleRect.contains(mp) {
-                    let pt = mapView.convert(ann.coordinate, toPointTo: mapView)
-                    if pt.x > 22 && pt.x < bounds.width - 22 && pt.y > 32 && pt.y < bounds.height - 14 {
-                        // 仅检测卡片核心区域（44x24），允许边缘适度错落叠层，避免既太稀疏又糊成一团
-                        let coreRect = CGRect(x: pt.x - 22, y: pt.y - 34, width: 44, height: 24)
-                        if !occupiedCores.contains(where: { $0.intersects(coreRect) }) {
-                            shouldShow = true
-                            rank = visibleLabelCount
-                            occupiedCores.append(coreRect)
-                            visibleLabelCount += 1
-                        }
+
+                if visibleLabelCount < maxLabels, let pt = visiblePoints[oid] {
+                    let pillSize = CityGlowAnnotationView.pillSize(for: ann.spot)
+                    for dir in order {
+                        let rect = Self.candidateRect(for: pt, size: pillSize, placement: dir)
+                        guard safeBounds.contains(rect) else { continue }
+                        let padded = rect.insetBy(dx: -3, dy: -3)
+                        let hitsPill = occupiedPills.contains { $0.intersects(padded) }
+                        if hitsPill { continue }
+                        let hitsOtherDot = dotRects.contains { $0.0 != oid && $0.1.intersects(padded) }
+                        if hitsOtherDot { continue }
+                        chosenPlacement = dir
+                        occupiedPills.append(rect)
+                        rank = visibleLabelCount
+                        visibleLabelCount += 1
+                        break
                     }
                 }
 
-                if ann.showLabel != shouldShow {
-                    ann.showLabel = shouldShow
-                    if let view = mapView.view(for: ann) as? CityGlowAnnotationView {
-                        view.setLabel(
-                            visible: shouldShow,
-                            pillImage: shouldShow ? renderPillImage(spot: ann.spot) : nil,
-                            animated: animated,
-                            rank: rank
-                        )
-                    }
+                let shouldShow = (chosenPlacement != nil)
+                let finalPlacement = chosenPlacement ?? ann.placement
+                let changed = (ann.showLabel != shouldShow) || (shouldShow && ann.placement != finalPlacement)
+                ann.showLabel = shouldShow
+                ann.placement = finalPlacement
+
+                if changed, let view = mapView.view(for: ann) as? CityGlowAnnotationView {
+                    view.configureLabel(
+                        spot: ann.spot,
+                        visible: shouldShow,
+                        placement: finalPlacement,
+                        animated: animated,
+                        rank: rank
+                    )
                 } else if shouldShow, let view = mapView.view(for: ann) as? CityGlowAnnotationView {
                     view.zPriority = MKAnnotationViewZPriority(rawValue: max(500, 1000 - Float(rank) * 15))
                 }
@@ -1578,9 +1716,10 @@ private struct CityGlowMKMapView: UIViewRepresentable {
                 ?? CityGlowAnnotationView(annotation: glowAnn, reuseIdentifier: id)
             view.annotation = glowAnn
             view.setDotImage(renderDotImage(days: glowAnn.spot.days))
-            view.setLabel(
+            view.configureLabel(
+                spot: glowAnn.spot,
                 visible: glowAnn.showLabel,
-                pillImage: glowAnn.showLabel ? renderPillImage(spot: glowAnn.spot) : nil,
+                placement: glowAnn.placement,
                 animated: false
             )
             return view
@@ -1596,48 +1735,6 @@ private struct CityGlowMKMapView: UIViewRepresentable {
                 drawOrangeGlow(in: ctx.cgContext, center: CGPoint(x: CGFloat(radiusKey), y: CGFloat(radiusKey)), radius: CGFloat(radiusKey))
             }
             dotCache[radiusKey] = img
-            return img
-        }
-
-        private func renderPillImage(spot: CityGlowSpot) -> UIImage {
-            let modeKey = isDark ? "D" : "L"
-            let cacheKey = "\(modeKey)|\(spot.name)|\(spot.days)"
-            if let cached = pillCache[cacheKey] { return cached }
-
-            let trait = UITraitCollection(userInterfaceStyle: isDark ? .dark : .light)
-            let bgColor = UIColor.systemBackground.resolvedColor(with: trait).withAlphaComponent(0.94)
-            let borderColor = UIColor.separator.resolvedColor(with: trait).withAlphaComponent(0.45)
-            let titleColor = UIColor.label.resolvedColor(with: trait)
-            let subColor = UIColor.secondaryLabel.resolvedColor(with: trait)
-
-            let title = spot.name as NSString
-            let subtitle = "\(spot.days) 天" as NSString
-            let titleAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
-                .foregroundColor: titleColor
-            ]
-            let subAttrs: [NSAttributedString.Key: Any] = [
-                .font: UIFont.monospacedDigitSystemFont(ofSize: 10.5, weight: .medium),
-                .foregroundColor: subColor
-            ]
-            let titleSize = title.size(withAttributes: titleAttrs)
-            let subSize = subtitle.size(withAttributes: subAttrs)
-            let pillW = max(titleSize.width, subSize.width) + 18
-            let pillH = titleSize.height + subSize.height + 10
-
-            let img = UIGraphicsImageRenderer(size: CGSize(width: pillW + 4, height: pillH + 4)).image { _ in
-                let pillRect = CGRect(x: 2, y: 2, width: pillW, height: pillH)
-                let pillPath = UIBezierPath(roundedRect: pillRect, cornerRadius: 12)
-                bgColor.setFill()
-                pillPath.fill()
-                borderColor.setStroke()
-                pillPath.lineWidth = 0.7
-                pillPath.stroke()
-
-                title.draw(at: CGPoint(x: pillRect.midX - titleSize.width / 2, y: pillRect.minY + 4), withAttributes: titleAttrs)
-                subtitle.draw(at: CGPoint(x: pillRect.midX - subSize.width / 2, y: pillRect.minY + 4 + titleSize.height + 1), withAttributes: subAttrs)
-            }
-            pillCache[cacheKey] = img
             return img
         }
 
@@ -1786,17 +1883,15 @@ actor StintPhotoFetcher {
 
         let dayEnd = cal.date(byAdding: .day, value: 1, to: dayStart) ?? dayStart.addingTimeInterval(86_400)
         let options = PHFetchOptions()
-        options.predicate = NSPredicate(
-            format: "creationDate >= %@ AND creationDate < %@ AND (mediaSubtypes & %d) == 0",
-            dayStart as NSDate, dayEnd as NSDate, PHAssetMediaSubtype.photoScreenshot.rawValue
-        )
+        options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate < %@", dayStart as NSDate, dayEnd as NSDate)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        options.fetchLimit = 40
+        options.fetchLimit = 60
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         let requireLocation = Self.locatedOnly
         var candidates: [PHAsset] = []
         for i in 0..<assets.count {
             let asset = assets.object(at: i)
+            guard !asset.mediaSubtypes.contains(.photoScreenshot) else { continue }
             if !requireLocation || asset.location != nil {
                 candidates.append(asset)
             }
@@ -1816,8 +1911,8 @@ actor StintPhotoFetcher {
         await dayPhotoItem(around: date)?.thumbnail
     }
 
-    func stintPhotoItem(for stint: CityStint) async -> (item: PhotoPreviewItem?, count: Int) {
-        if let cached = stintCache[stint.id] { return cached }
+    func stintPhotoItem(for stint: CityStint, among peerStints: [CityStint] = []) async -> (item: PhotoPreviewItem?, count: Int) {
+        if peerStints.isEmpty, let cached = stintCache[stint.id] { return cached }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized || status == .limited else {
             return (nil, 0)
@@ -1828,26 +1923,29 @@ actor StintPhotoFetcher {
         let windowEnd = min(rawEnd, stint.start.addingTimeInterval(7 * 86_400))
 
         let options = PHFetchOptions()
-        options.predicate = NSPredicate(
-            format: "creationDate >= %@ AND creationDate <= %@ AND (mediaSubtypes & %d) == 0",
-            windowStart as NSDate, windowEnd as NSDate, PHAssetMediaSubtype.photoScreenshot.rawValue
-        )
+        options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate <= %@", windowStart as NSDate, windowEnd as NSDate)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        options.fetchLimit = 48
+        options.fetchLimit = 80
 
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         let requireLocation = Self.locatedOnly
         let stintCenter = CLLocation(latitude: stint.latitude, longitude: stint.longitude)
+        let peers = peerStints.count > 1 ? peerStints : []
         var candidates: [PHAsset] = []
         for i in 0..<assets.count {
             let asset = assets.object(at: i)
+            guard !asset.mediaSubtypes.contains(.photoScreenshot) else { continue }
+            let fitsLocation: Bool
             if let loc = asset.location {
-                if loc.distance(from: stintCenter) <= 50_000 {
-                    candidates.append(asset)
-                }
-            } else if !requireLocation {
-                candidates.append(asset)
+                fitsLocation = loc.distance(from: stintCenter) <= 50_000
+            } else {
+                fitsLocation = !requireLocation
             }
+            guard fitsLocation else { continue }
+            if !peers.isEmpty, let bestID = Self.bestMatchingStintID(for: asset, among: peers, locatedOnly: requireLocation), bestID != stint.id {
+                continue
+            }
+            candidates.append(asset)
         }
         let count = candidates.count
         guard count > 0 else {
@@ -1865,34 +1963,74 @@ actor StintPhotoFetcher {
         return res
     }
 
+    private static func stintTimeDistance(from date: Date, to stint: CityStint) -> TimeInterval {
+        let end = max(stint.end, stint.start)
+        if date < stint.start { return stint.start.timeIntervalSince(date) }
+        if date > end { return date.timeIntervalSince(end) }
+        return 0
+    }
+
+    /// Assigns each photo exclusively to the single closest CityStint (GPS distance first, then time) so adjacent cities never show duplicate photos.
+    private static func bestMatchingStintID(for asset: PHAsset, among stints: [CityStint], locatedOnly: Bool) -> String? {
+        guard let created = asset.creationDate else { return nil }
+        let candidates = stints.filter { s in
+            guard stintTimeDistance(from: created, to: s) <= 900 else { return false }
+            if let loc = asset.location {
+                return loc.distance(from: CLLocation(latitude: s.latitude, longitude: s.longitude)) <= 50_000
+            }
+            return !locatedOnly
+        }
+        guard !candidates.isEmpty else { return nil }
+        if let loc = asset.location {
+            return candidates.min { a, b in
+                let da = loc.distance(from: CLLocation(latitude: a.latitude, longitude: a.longitude))
+                let db = loc.distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+                if abs(da - db) > 50 { return da < db }
+                let ta = stintTimeDistance(from: created, to: a)
+                let tb = stintTimeDistance(from: created, to: b)
+                if abs(ta - tb) > 1 { return ta < tb }
+                return a.start < b.start
+            }?.id
+        }
+        return candidates.min { a, b in
+            let ta = stintTimeDistance(from: created, to: a)
+            let tb = stintTimeDistance(from: created, to: b)
+            if abs(ta - tb) > 1 { return ta < tb }
+            return a.start < b.start
+        }?.id
+    }
+
     func thumbnail(for stint: CityStint) async -> (image: UIImage?, count: Int) {
         let r = await stintPhotoItem(for: stint)
         return (r.item?.thumbnail, r.count)
     }
 
-    func stayPhotoItems(for stay: Stay) async -> [PhotoPreviewItem] {
-        if let cached = stayCache[stay.id] { return cached }
+    func stayPhotoItems(for stay: Stay, among dayStays: [Stay] = []) async -> [PhotoPreviewItem] {
+        if dayStays.isEmpty, let cached = stayCache[stay.id] { return cached }
         let status = PHPhotoLibrary.authorizationStatus(for: .readWrite)
         guard status == .authorized || status == .limited else { return [] }
 
         let start = stay.arrival.addingTimeInterval(-300)
-        let end = (stay.departure ?? stay.arrival).addingTimeInterval(300)
+        let rawEnd = Self.effectiveEnd(of: stay)
+        let end = rawEnd.addingTimeInterval(300)
         let options = PHFetchOptions()
-        options.predicate = NSPredicate(
-            format: "creationDate >= %@ AND creationDate <= %@ AND (mediaSubtypes & %d) == 0",
-            start as NSDate, end as NSDate, PHAssetMediaSubtype.photoScreenshot.rawValue
-        )
+        options.predicate = NSPredicate(format: "creationDate >= %@ AND creationDate <= %@", start as NSDate, end as NSDate)
         options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        options.fetchLimit = 60
+        options.fetchLimit = 80
 
         let assets = PHAsset.fetchAssets(with: .image, options: options)
         let requireLocation = Self.locatedOnly
         let place = stay.location
+        let peers = dayStays.count > 1 ? dayStays : []
         var items: [PhotoPreviewItem] = []
         let cap = "\(stay.displayName) · \(Formatters.dayTitle(stay.arrival))"
         for i in 0..<assets.count {
             let asset = assets.object(at: i)
+            guard !asset.mediaSubtypes.contains(.photoScreenshot) else { continue }
             guard Self.belongs(photoAt: asset.location, to: place, locatedOnly: requireLocation) else { continue }
+            if !peers.isEmpty, let bestID = Self.bestMatchingStayID(for: asset, among: peers, locatedOnly: requireLocation), bestID != stay.id {
+                continue
+            }
             if let img = await requestThumb(asset: asset, size: CGSize(width: 200, height: 200)) {
                 items.append(PhotoPreviewItem(id: asset.localIdentifier, assetID: asset.localIdentifier, thumbnail: img, caption: cap))
                 if items.count >= 36 { break }
@@ -1901,6 +2039,45 @@ actor StintPhotoFetcher {
         if stayCache.count > 160 { stayCache.removeAll() }
         stayCache[stay.id] = items
         return items
+    }
+
+    private static func effectiveEnd(of stay: Stay) -> Date {
+        if let dep = stay.departure { return max(dep, stay.arrival) }
+        return min(max(Date(), stay.arrival), stay.arrival.addingTimeInterval(86_400))
+    }
+
+    private static func timeDistance(from date: Date, to stay: Stay) -> TimeInterval {
+        let end = effectiveEnd(of: stay)
+        if date < stay.arrival { return stay.arrival.timeIntervalSince(date) }
+        if date > end { return date.timeIntervalSince(end) }
+        return 0
+    }
+
+    /// Assigns each photo exclusively to the single closest stay (by GPS distance first, then time) so the same photo never duplicates across nearby stays.
+    private static func bestMatchingStayID(for asset: PHAsset, among stays: [Stay], locatedOnly: Bool) -> UUID? {
+        guard let created = asset.creationDate else { return nil }
+        let candidates = stays.filter { s in
+            timeDistance(from: created, to: s) <= 300
+                && belongs(photoAt: asset.location, to: s.location, locatedOnly: locatedOnly)
+        }
+        guard !candidates.isEmpty else { return nil }
+        if let loc = asset.location {
+            return candidates.min { a, b in
+                let da = loc.distance(from: a.location)
+                let db = loc.distance(from: b.location)
+                if abs(da - db) > 15 { return da < db }
+                let ta = timeDistance(from: created, to: a)
+                let tb = timeDistance(from: created, to: b)
+                if abs(ta - tb) > 1 { return ta < tb }
+                return a.arrival < b.arrival
+            }?.id
+        }
+        return candidates.min { a, b in
+            let ta = timeDistance(from: created, to: a)
+            let tb = timeDistance(from: created, to: b)
+            if abs(ta - tb) > 1 { return ta < tb }
+            return a.arrival < b.arrival
+        }?.id
     }
 
     func stayPhotos(for stay: Stay) async -> [UIImage] {

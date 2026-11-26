@@ -58,6 +58,11 @@ final class BlindBoxStore: ObservableObject {
         persist()
     }
 
+    func replaceAll(_ passes: [BoardingPass]) {
+        savedPasses = passes
+        persist()
+    }
+
     private func persist() {
         if let data = try? JSONEncoder().encode(savedPasses) {
             UserDefaults.standard.set(data, forKey: key)

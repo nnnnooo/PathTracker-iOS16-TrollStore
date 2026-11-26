@@ -67,46 +67,52 @@ struct StayDetailSheet: View {
     var body: some View {
         let current = liveStay
         NavigationStack {
-            Form {
-                Section {
-                    StayPinMKMapView(stay: current)
-                        .frame(height: 200)
-                        .listRowInsets(EdgeInsets())
-                }
-
-                if !isEditing {
-                    overviewSection(current)
-                }
-
+            Group {
                 if isEditing {
-                    editNameSection(current)
-                }
-
-                if !isEditing && !photos.isEmpty {
-                    takenHereSection
-                }
-
-                momentSection(current)
-                timeSection(current)
-
-                if !isEditing {
-                    skySection(current)
-                }
-
-                locationSection(current)
-
-                if isEditing {
-                    privacySection
-                    Section {
-                        Button(role: .destructive) {
-                            confirmingDelete = true
-                        } label: {
-                            Label("删除这条记录", systemImage: "trash")
+                    Form {
+                        Section {
+                            StayPinMKMapView(stay: current)
+                                .frame(height: 200)
+                                .listRowInsets(EdgeInsets())
+                        }
+                        editNameSection(current)
+                        momentFormSection(current)
+                        timeSection(current)
+                        locationSection(current)
+                        privacySection
+                        Section {
+                            Button(role: .destructive) {
+                                confirmingDelete = true
+                            } label: {
+                                Label("删除这条记录", systemImage: "trash")
+                            }
                         }
                     }
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 16) {
+                            StayPinMKMapView(stay: current)
+                                .frame(height: 210)
+                                .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+
+                            overviewCard(current)
+
+                            if !photos.isEmpty {
+                                takenHereCard
+                            }
+
+                            momentCard(current)
+                            timeCard(current)
+                            skyCard(current)
+                            locationCard(current)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
+                        .padding(.bottom, 28)
+                    }
+                    .background(Color(.systemGroupedBackground))
                 }
             }
-            .animation(.easeInOut(duration: 0.22), value: isEditing)
             .navigationTitle(current.displayName)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -142,7 +148,7 @@ struct StayDetailSheet: View {
                     }
                     ToolbarItem(placement: .navigationBarTrailing) {
                         Button("编辑") {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             loadFields(from: current)
                             isEditing = true
                         }
@@ -158,13 +164,13 @@ struct StayDetailSheet: View {
                     updated.note = savedNote.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
                     store.upsertStay(updated)
                     noteText = updated.note ?? ""
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.success()
                 }
             }
             .confirmationDialog("删除这条停留记录？", isPresented: $confirmingDelete, titleVisibility: .visible) {
                 Button("删除", role: .destructive) {
                     store.deleteStay(id: current.id)
-                    UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    Haptics.success()
                     dismiss()
                 }
                 Button("取消", role: .cancel) {}
@@ -184,72 +190,264 @@ struct StayDetailSheet: View {
         .presentationDetents([.large])
     }
 
-    // MARK: - Overview Card (1:1 Original StayDetailView.overview)
+    // MARK: - Unified 20pt Card Sections (Matching TodayView & MoveDetailSheet)
 
-    private func overviewSection(_ current: Stay) -> some View {
-        Section {
-            HStack(spacing: 14) {
-                ZStack {
-                    if let first = photos.first {
-                        Image(uiImage: first.thumbnail)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 52, height: 52)
-                            .clipShape(Circle())
-                            .overlay(alignment: .bottomTrailing) {
-                                if current.isLandmark {
-                                    Image(systemName: "star.fill")
-                                        .font(.system(size: 11, weight: .bold))
-                                        .foregroundColor(.white)
-                                        .padding(3.5)
-                                        .background(Circle().fill(Color.yellow))
-                                        .offset(x: 2, y: 2)
-                                }
-                            }
-                            .onTapGesture {
-                                PhotoLightboxPresenter.present(items: photos, startIndex: 0)
-                            }
-                    } else {
-                        PlaceIcon(category: current.category, isLandmark: current.isLandmark, size: 52)
-                    }
-                }
-                .frame(width: 52, height: 52)
+    private func cardHeader(_ title: String) -> some View {
+        Text(title)
+            .font(.footnote.weight(.medium))
+            .foregroundColor(.secondary)
+            .padding(.leading, 12)
+    }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(current.displayName)
-                        .font(.title3.bold())
-                        .lineLimit(2)
-                    let regionLine = [current.city, current.country].compactMap { $0?.nilIfEmpty }.joined(separator: " · ")
-                    if !regionLine.isEmpty {
-                        Text(regionLine)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    } else if let sub = current.subtitle {
-                        Text(sub)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                    }
-                    Text(timeSummaryLine(for: current))
+    private func detailRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.body)
+                .foregroundColor(.primary)
+            Spacer(minLength: 12)
+            Text(value)
+                .font(.body.monospacedDigit())
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+    }
+
+    private func overviewCard(_ current: Stay) -> some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(current.displayName)
+                    .font(.title3.bold())
+                    .lineLimit(2)
+                let regionLine = [current.city, current.country].compactMap { $0?.nilIfEmpty }.joined(separator: " · ")
+                if !regionLine.isEmpty {
+                    Text(regionLine)
                         .font(.subheadline)
                         .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                } else if let sub = current.subtitle {
+                    Text(sub)
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
                 }
+                Text(timeSummaryLine(for: current))
+                    .font(.subheadline)
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            .padding(.vertical, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(16)
 
             if showsDayLink {
+                Divider().padding(.leading, 16)
                 NavigationLink {
                     DayDetailPage(date: current.arrival)
                 } label: {
-                    Label("查看这一天的轨迹", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
-                        .font(.body.weight(.semibold))
+                    HStack {
+                        Label("查看这一天的轨迹", systemImage: "point.topleft.down.curvedto.point.bottomright.up")
+                            .font(.body.weight(.semibold))
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(Color(.tertiaryLabel))
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 13)
                 }
+                .buttonStyle(.plain)
             }
+        }
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var takenHereCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardHeader("在这里拍的照片 \(photos.count)")
+            StayDetailPhotoStrip(photos: photos)
+                .padding(12)
+                .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
     }
 
-    // MARK: - Edit Name & Kind (1:1 Original)
+    private func momentCard(_ current: Stay) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardHeader("动态")
+            VStack(spacing: 0) {
+                if let note = current.note, !note.isEmpty {
+                    Text(note)
+                        .font(.body)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                    Divider().padding(.leading, 16)
+                    Button {
+                        showNoteComposer = true
+                    } label: {
+                        Label("编辑", systemImage: "square.and.pencil")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 13)
+                    }
+                } else {
+                    Button {
+                        showNoteComposer = true
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: "square.and.pencil")
+                                .font(.title2)
+                                .foregroundColor(.white)
+                                .frame(width: 48, height: 48)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Color.accentColor.gradient)
+                                )
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("记录心情")
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text("写下这一刻的心情或备注")
+                                    .font(.subheadline)
+                                    .foregroundColor(.secondary)
+                            }
+                            Spacer(minLength: 0)
+                        }
+                        .padding(14)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+    }
+
+    private func timeCard(_ current: Stay) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            cardHeader("时间")
+            VStack(spacing: 0) {
+                detailRow("到达", Self.fullDateTime(current.arrival))
+                Divider().padding(.leading, 16)
+                detailRow("离开", current.departure.map(Self.fullDateTime) ?? "仍在这里")
+                Divider().padding(.leading, 16)
+                detailRow("停留", Formatters.duration(current.duration))
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+    }
+
+    private func skyCard(_ current: Stay) -> some View {
+        let sun = SkyAstronomy.sunInfo(date: current.arrival, lat: current.latitude, lon: current.longitude)
+        let moon = SkyAstronomy.moonPhase(for: current.arrival)
+        let end = current.departure ?? current.arrival
+        let caughtSunset: String? = {
+            guard let sunsetDate = sun.sunsetDate else { return nil }
+            if current.arrival <= sunsetDate && end >= sunsetDate {
+                return "日落 \(sun.sunsetText) 时，你正在这里"
+            }
+            return nil
+        }()
+
+        return VStack(alignment: .leading, spacing: 8) {
+            cardHeader("那天的天空")
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Image(systemName: "sunrise.fill")
+                        .foregroundColor(.orange)
+                        .frame(width: 24, alignment: .center)
+                    Text("日出 – 日落")
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Text(sun.rangeText)
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+
+                if let caughtSunset {
+                    Divider().padding(.leading, 50)
+                    HStack(spacing: 10) {
+                        Image(systemName: "sunset.fill")
+                            .foregroundColor(.orange)
+                            .frame(width: 24, alignment: .center)
+                        Text(caughtSunset)
+                            .font(.subheadline)
+                            .foregroundColor(.orange)
+                        Spacer()
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                }
+
+                Divider().padding(.leading, 50)
+                HStack(spacing: 10) {
+                    Image(systemName: moon.symbol)
+                        .foregroundColor(.blue)
+                        .frame(width: 24, alignment: .center)
+                    Text("那晚的月亮")
+                        .foregroundColor(.primary)
+                    Spacer()
+                    Text("\(moon.name) · \(moon.illuminationPercent)%")
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+    }
+
+    private func locationCard(_ current: Stay) -> some View {
+        var rows: [(String, String)] = []
+        if let placeName = current.placeName, !placeName.isEmpty { rows.append(("地点名称", placeName)) }
+        if let street = current.street, !street.isEmpty { rows.append(("街道", street)) }
+        if let city = current.city, !city.isEmpty { rows.append(("所在城市", city)) }
+        if let country = current.country, !country.isEmpty {
+            let flag = current.countryCode.map { CountryText.flag(for: $0) } ?? ""
+            rows.append(("国家/地区", flag.isEmpty ? country : "\(flag) \(country)"))
+        }
+
+        return VStack(alignment: .leading, spacing: 8) {
+            cardHeader("位置")
+            VStack(spacing: 0) {
+                ForEach(Array(rows.enumerated()), id: \.offset) { idx, row in
+                    detailRow(row.0, row.1)
+                    if idx < rows.count - 1 || current.tagState != .tagged {
+                        Divider().padding(.leading, 16)
+                    }
+                }
+                if current.tagState != .tagged {
+                    Button {
+                        var copy = current
+                        copy.tagState = .pending
+                        store.upsertStay(copy)
+                        tagger.enqueue()
+                    } label: {
+                        Label("重新识别地点", systemImage: "arrow.clockwise")
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 13)
+                    }
+                }
+                if !rows.isEmpty || current.tagState != .tagged {
+                    Divider().padding(.leading, 16)
+                }
+                Button {
+                    let item = MKMapItem(placemark: MKPlacemark(coordinate: current.coordinate.onMap))
+                    item.name = current.displayName
+                    item.openInMaps()
+                } label: {
+                    Label("在“地图”中打开", systemImage: "map")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 13)
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        }
+    }
+
+    // MARK: - Edit Mode Form Sections
 
     private func editNameSection(_ current: Stay) -> some View {
         Section {
@@ -260,6 +458,7 @@ struct StayDetailSheet: View {
                     Label(item.title, systemImage: item.symbol).tag(item)
                 }
             }
+            .pickerStyle(.menu)
         } header: {
             Text("名称")
         } footer: {
@@ -280,24 +479,10 @@ struct StayDetailSheet: View {
         }
     }
 
-    // MARK: - Photos Taken Here (1:1 Original 4x2 Expandable Grid)
-
-    private var takenHereSection: some View {
-        Section {
-            StayDetailPhotoStrip(photos: photos)
-                .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
-        } header: {
-            Text("在这里拍的照片 \(photos.count)")
-        }
-    }
-
-    // MARK: - Moment / Note Section (1:1 Original postSection)
-
-    private func momentSection(_ current: Stay) -> some View {
+    private func momentFormSection(_ current: Stay) -> some View {
         Section("动态") {
             if let note = current.note, !note.isEmpty {
-                Text(note)
-                    .font(.body)
+                Text(note).font(.body)
                 Button {
                     showNoteComposer = true
                 } label: {
@@ -307,91 +492,17 @@ struct StayDetailSheet: View {
                 Button {
                     showNoteComposer = true
                 } label: {
-                    HStack(spacing: 14) {
-                        Image(systemName: "photo.badge.plus")
-                            .font(.title2)
-                            .foregroundColor(.white)
-                            .frame(width: 48, height: 48)
-                            .background(
-                                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                                    .fill(Color.accentColor.gradient)
-                            )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("发布照片和心情")
-                                .font(.headline)
-                                .foregroundColor(.primary)
-                            Text(photos.isEmpty ? "留下这一刻" : "你在这里拍了 \(photos.count) 张照片")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 2)
+                    Label("记录心情", systemImage: "square.and.pencil")
                 }
-                .buttonStyle(.plain)
             }
         }
     }
-
-    // MARK: - Time Section
 
     private func timeSection(_ current: Stay) -> some View {
         Section("时间") {
             LabeledContent("到达", value: Self.fullDateTime(current.arrival))
             LabeledContent("离开", value: current.departure.map(Self.fullDateTime) ?? "仍在这里")
             LabeledContent("停留", value: Formatters.duration(current.duration))
-        }
-    }
-
-    // MARK: - Sky Section (Sunrise/Sunset + Caught Sunset Highlight + Moon Phase)
-
-    private func skySection(_ current: Stay) -> some View {
-        let sun = SkyAstronomy.sunInfo(date: current.arrival, lat: current.latitude, lon: current.longitude)
-        let moon = SkyAstronomy.moonPhase(for: current.arrival)
-        let end = current.departure ?? current.arrival
-        let caughtSunset: String? = {
-            guard let sunsetDate = sun.sunsetDate else { return nil }
-            if current.arrival <= sunsetDate && end >= sunsetDate {
-                return "日落 \(sun.sunsetText) 时，你正在这里"
-            }
-            return nil
-        }()
-
-        return Section("那天的天空") {
-            HStack {
-                Label {
-                    Text("日出 – 日落")
-                } icon: {
-                    Image(systemName: "sunrise.fill")
-                        .foregroundColor(.orange)
-                }
-                Spacer()
-                Text(sun.rangeText)
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-            }
-
-            if let caughtSunset {
-                HStack(spacing: 8) {
-                    Image(systemName: "sunset.fill")
-                        .foregroundColor(.orange)
-                    Text(caughtSunset)
-                        .font(.subheadline)
-                        .foregroundColor(.orange)
-                }
-            }
-
-            HStack {
-                Label {
-                    Text("那晚的月亮")
-                } icon: {
-                    Image(systemName: moon.symbol)
-                        .foregroundColor(.blue)
-                }
-                Spacer()
-                Text("\(moon.name) · \(moon.illuminationPercent)%")
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-            }
         }
     }
 
@@ -479,7 +590,7 @@ struct StayDetailSheet: View {
             store.deletePrivacyZone(id: zone.id)
         }
 
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        Haptics.success()
         isEditing = false
     }
 
@@ -595,7 +706,7 @@ private struct StayDetailPhotoStrip: View {
 
             if photos.count > Self.collapsedLimit {
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
                         expanded.toggle()
                     }
@@ -650,8 +761,20 @@ private struct StayNoteComposerSheet: View {
         NavigationStack {
             Form {
                 Section(placeName) {
-                    TextField("写下这一刻的心情或备注…", text: $text, axis: .vertical)
-                        .lineLimit(4...10)
+                    ZStack(alignment: .topLeading) {
+                        if text.isEmpty {
+                            Text("写下这一刻的心情或备注…")
+                                .font(.body)
+                                .foregroundColor(Color(.placeholderText))
+                                .padding(.top, 8)
+                                .padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: $text)
+                            .font(.body)
+                            .frame(minHeight: 150)
+                            .scrollContentBackground(.hidden)
+                    }
                 }
             }
             .navigationTitle("记录心情")

@@ -1,4 +1,49 @@
 import SwiftUI
+import UIKit
+
+/// Centralized toggleable haptic feedback helper (controlled in Settings).
+enum Haptics {
+    static let enabledKey = "wt16.haptics.enabled"
+
+    static var isEnabled: Bool {
+        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? true
+    }
+
+    static func selection() {
+        guard isEnabled else { return }
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    static func light() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    static func medium() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+    }
+
+    static func heavy() {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .heavy).impactOccurred()
+    }
+
+    static func soft(_ intensity: CGFloat = 0.5) {
+        guard isEnabled else { return }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred(intensity: intensity)
+    }
+
+    static func success() {
+        guard isEnabled else { return }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    static func warning() {
+        guard isEnabled else { return }
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+}
 
 /// Upstream Waytrace visual components adapted for iOS 16.0+.
 
@@ -76,6 +121,7 @@ struct MetricTile: View {
     let value: String
     let symbol: String
     let tint: Color
+    var showsChevron: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
@@ -87,9 +133,16 @@ struct MetricTile: View {
                     .font(.footnote.weight(.medium))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+                if showsChevron {
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(Color(.tertiaryLabel))
+                }
             }
             Text(value)
                 .font(.system(.title2, design: .rounded, weight: .semibold))
+                .foregroundColor(.primary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
         }
@@ -149,6 +202,7 @@ struct ProfileToolbarButton: View {
 
     var body: some View {
         Button {
+            Haptics.selection()
             showingSettings = true
         } label: {
             let initial = String(profileName.trimmingCharacters(in: .whitespacesAndNewlines).prefix(1)).uppercased().nilIfEmpty ?? "F"

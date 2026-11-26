@@ -78,7 +78,7 @@ struct YearReportView: View {
         }
         .preferredColorScheme(.dark)
         .onChange(of: page) { _ in
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
         }
         .sheet(item: $shareItem) { item in
             YearActivityShareSheet(items: [item.image])
@@ -1471,7 +1471,7 @@ private struct YearLongestDayPage: View {
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     playRouteAnimation()
                 }
             }
@@ -1483,7 +1483,7 @@ private struct YearLongestDayPage: View {
                     Spacer()
                     if backdrop != nil {
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             playRouteAnimation()
                         } label: {
                             Label("重播路线", systemImage: "play.circle.fill")
@@ -1665,7 +1665,7 @@ private struct YearFavoritePage: View {
         guard photos.count > 1 else { return }
         index = (index + 1) % photos.count
         UserDefaults.standard.set(photos[index].localIdentifier, forKey: choiceKey)
-        UISelectionFeedbackGenerator().selectionChanged()
+        Haptics.selection()
         Task { await loadImage() }
     }
 

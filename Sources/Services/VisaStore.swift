@@ -470,6 +470,13 @@ final class VisaStore: ObservableObject {
         cancelReminders(for: id)
     }
 
+    func replaceAll(_ records: [VisaRecord]) {
+        for old in visas { cancelReminders(for: old.id) }
+        visas = records
+        save()
+        for item in visas { scheduleReminders(for: item) }
+    }
+
     private func load() {
         guard let data = try? Data(contentsOf: fileURL),
               let decoded = try? JSONDecoder().decode([VisaRecord].self, from: data) else { return }

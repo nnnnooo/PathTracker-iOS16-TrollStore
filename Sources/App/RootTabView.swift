@@ -46,7 +46,7 @@ struct RootTabView: View {
                 .tag(RootTab.stats)
         }
         .onChange(of: selectedTab) { _ in
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
         }
         .sheet(isPresented: $showingSettings) {
             SettingsView()

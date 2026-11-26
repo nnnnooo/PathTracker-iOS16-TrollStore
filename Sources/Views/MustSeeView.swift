@@ -127,7 +127,7 @@ struct MustSeeView: View {
                 let isOn = option == listType
                 let count = option == .china ? chinaVisited.count : worldVisited.count
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.easeInOut(duration: 0.25)) { listType = option }
                 } label: {
                     VStack(spacing: 2) {
@@ -354,7 +354,7 @@ struct MustSeeView: View {
     private func filterChip(_ value: Filter, title: String, count: Int) -> some View {
         let on = filter == value
         return Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
             withAnimation(.easeInOut(duration: 0.2)) { filter = value }
         } label: {
             HStack(spacing: 5) {
@@ -463,7 +463,7 @@ struct MustSeeView: View {
 
             if litDate == nil {
                 Button {
-                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    Haptics.light()
                     userStore.toggleWish(place.id)
                 } label: {
                     Image(systemName: wished ? "heart.fill" : "heart")
@@ -484,7 +484,7 @@ struct MustSeeView: View {
             let fresh = MustSee.allPlaces.filter { allLitIDs.contains($0.id) && !seen.contains($0.id) }
             if !fresh.isEmpty {
                 withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { justLit = fresh }
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                Haptics.success()
             }
         }
         seenRaw = allLitIDs.isEmpty ? "-" : allLitIDs.sorted().joined(separator: ",")
@@ -598,11 +598,15 @@ struct MustSeePlaceView: View {
         var list: [UIImage] = []
         if let custom = userStore.customCoverImage(for: place.id) {
             list.append(custom)
-        } else if let coverImage {
-            list.append(coverImage)
         }
         list.append(contentsOf: heroUserImages)
-        return list
+        if !list.isEmpty {
+            return list
+        }
+        if let coverImage {
+            return [coverImage]
+        }
+        return []
     }
 
     var body: some View {
@@ -633,7 +637,7 @@ struct MustSeePlaceView: View {
 
                     actionButtonsSection
 
-                    if let credit = MustSeePhotos.credit(place.id) {
+                    if !hasCustomCover && heroUserImages.isEmpty, let credit = MustSeePhotos.credit(place.id) {
                         Link(destination: credit.page) {
                             HStack(alignment: .firstTextBaseline, spacing: 6) {
                                 Image(systemName: "camera")
@@ -660,7 +664,7 @@ struct MustSeePlaceView: View {
         .toolbar {
             ToolbarItem(placement: .navigationBarTrailing) {
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     showEditSheet = true
                 } label: {
                     Text("编辑")
@@ -686,7 +690,7 @@ struct MustSeePlaceView: View {
                 if let data = try? await newItem.loadTransferable(type: Data.self) {
                     await MainActor.run {
                         userStore.saveCustomCover(data, for: place.id)
-                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                        Haptics.success()
                     }
                 }
                 pickedPhoto = nil
@@ -699,7 +703,7 @@ struct MustSeePlaceView: View {
                 } else {
                     userStore.toggleManualVisit(place.id)
                 }
-                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                Haptics.success()
             }
             Button("取消", role: .cancel) {}
         } message: {
@@ -707,10 +711,10 @@ struct MustSeePlaceView: View {
         }
         .task(id: place.id) {
             appeared = true
-            coverImage = await MustSeePhotos.cover(place.id)
             if isAutoLit {
                 await loadUserPhotosForPlace()
             }
+            coverImage = await MustSeePhotos.cover(place.id)
         }
     }
 
@@ -867,7 +871,7 @@ struct MustSeePlaceView: View {
 
                 if myPhotos.count > 9 {
                     Button {
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         withAnimation(.easeInOut(duration: 0.25)) {
                             showAllPhotos.toggle()
                         }
@@ -1010,7 +1014,7 @@ struct MustSeePlaceView: View {
             if !isLit {
                 VStack(spacing: 8) {
                     Button {
-                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                        Haptics.light()
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                             userStore.toggleWish(place.id)
                         }
@@ -1044,7 +1048,7 @@ struct MustSeePlaceView: View {
 
                 VStack(spacing: 8) {
                     Button {
-                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                        Haptics.medium()
                         withAnimation(.spring(response: 0.35, dampingFraction: 0.75)) {
                             userStore.toggleManualVisit(place.id)
                         }
@@ -1210,7 +1214,7 @@ private struct MustSeeEditSheet: View {
 
                     if hasCustomCover {
                         Button(role: .destructive) {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             userStore.removeCustomCover(for: place.id)
                         } label: {
                             Label("恢复默认照片", systemImage: "arrow.counterclockwise")
@@ -1248,14 +1252,14 @@ private struct MustSeeEditSheet: View {
                             }
 
                         Button(role: .destructive) {
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            Haptics.success()
                             userStore.toggleManualVisit(place.id)
                         } label: {
                             Label("标记为未去过（取消点亮）", systemImage: "xmark.circle")
                         }
                     } else if isAutoLit {
                         Button(role: .destructive) {
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            Haptics.success()
                             userStore.markAsNotVisited(place.id)
                         } label: {
                             Label("识别有误，标记为未去过", systemImage: "xmark.circle")
@@ -1264,7 +1268,7 @@ private struct MustSeeEditSheet: View {
                         DatePicker("到访日期", selection: $manualDate, in: ...Date(), displayedComponents: .date)
 
                         Button {
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            Haptics.success()
                             userStore.setManualVisitDate(place.id, date: manualDate)
                         } label: {
                             Label("标记为我去过这里", systemImage: "checkmark.circle.fill")
@@ -1272,7 +1276,7 @@ private struct MustSeeEditSheet: View {
 
                         if isExcluded {
                             Button {
-                                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                                Haptics.success()
                                 userStore.restoreAutoVisit(place.id)
                             } label: {
                                 Label("恢复自动识别", systemImage: "arrow.uturn.backward")
@@ -1285,7 +1289,10 @@ private struct MustSeeEditSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
+                    Button("完成") {
+                        Haptics.selection()
+                        dismiss()
+                    }
                 }
             }
             .onAppear {
@@ -1297,7 +1304,7 @@ private struct MustSeeEditSheet: View {
                     if let data = try? await newItem.loadTransferable(type: Data.self) {
                         await MainActor.run {
                             userStore.saveCustomCover(data, for: place.id)
-                            UINotificationFeedbackGenerator().notificationOccurred(.success)
+                            Haptics.success()
                         }
                     }
                     pickedPhoto = nil

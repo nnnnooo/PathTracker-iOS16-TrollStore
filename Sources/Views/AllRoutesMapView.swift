@@ -297,7 +297,7 @@ struct AllRoutesMapScreen: View {
                         ForEach(availableKinds) { option in
                             let selected = (kind == option)
                             Button {
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selection()
                                 withAnimation(.easeInOut(duration: 0.2)) {
                                     kind = option
                                 }
@@ -373,7 +373,7 @@ struct AllRoutesMapScreen: View {
             ForEach(RouteSpan.quick, id: \.self) { option in
                 let selected = (span == option)
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.easeInOut(duration: 0.2)) {
                         span = option
                     }
@@ -508,7 +508,7 @@ private struct AllRoutesMKMapView: UIViewRepresentable {
         map.isPitchEnabled = false
         map.showsCompass = true
         map.showsScale = true
-        map.layoutMargins = UIEdgeInsets(top: 60, left: 8, bottom: 200, right: 8)
+        map.layoutMargins = UIEdgeInsets(top: 56, left: 8, bottom: 186, right: 8)
         map.addOverlay(AtlasDuskOverlay.world(), level: .aboveRoads)
         return map
     }
@@ -544,7 +544,8 @@ private struct AllRoutesMKMapView: UIViewRepresentable {
                 drawnKey = nil
             }
 
-            let padding = UIEdgeInsets(top: 70, left: 30, bottom: 210, right: 30)
+            // layoutMargins already reserves top header & bottom controls; keep edgePadding tight so tracks fill the map
+            let padding = UIEdgeInsets(top: 22, left: 26, bottom: 22, right: 26)
             if !framed, !lines.isEmpty {
                 framed = true
                 map.setVisibleMapRect(fitsWhole ? Self.whole(lines) : Self.framing(lines), edgePadding: padding, animated: atHome)

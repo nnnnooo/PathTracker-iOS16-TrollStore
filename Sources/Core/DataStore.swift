@@ -102,6 +102,13 @@ final class DataStore: ObservableObject {
             radius REAL NOT NULL
         );
         """)
+
+        execute("""
+        CREATE TABLE IF NOT EXISTS app_backup_state (
+            key TEXT PRIMARY KEY,
+            payload BLOB NOT NULL
+        );
+        """)
     }
 
     private func execute(_ sql: String) {
@@ -116,9 +123,135 @@ final class DataStore: ObservableObject {
         self.privacyZones = fetchAllPrivacyZonesFromDB()
     }
 
-    // MARK: - Backup & Restore
+    // MARK: - Backup & Restore (Full Single-File SQLite Snapshot)
+
+    private struct ChinaRegionsBackupPayload: Codable {
+        var areas: VisitedAreasPayload
+        var removed: [String]
+    }
+
+    private struct UserPrefsBackupPayload: Codable {
+        var profileName: String?
+        var profileSubtitle: String?
+        var nationality: String?
+        var passportTheme: String?
+        var dismissedTrips: [String]?
+        var photosLocatedOnly: Bool?
+        var journeyRoute: String?
+        var hapticsEnabled: Bool?
+    }
+
+    private func writeBackupStateBlob(key: String, data: Data) {
+        guard let db else { return }
+        let sql = "INSERT OR REPLACE INTO app_backup_state (key, payload) VALUES (?, ?);"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, key)
+        _ = data.withUnsafeBytes { raw in
+            sqlite3_bind_blob(stmt, 2, raw.baseAddress, Int32(data.count), SQLITE_TRANSIENT)
+        }
+        sqlite3_step(stmt)
+    }
+
+    private func readBackupStateBlob(key: String) -> Data? {
+        guard let db else { return nil }
+        let sql = "SELECT payload FROM app_backup_state WHERE key = ?;"
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { return nil }
+        defer { sqlite3_finalize(stmt) }
+        bindText(stmt, 1, key)
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return nil }
+        let bytes = sqlite3_column_blob(stmt, 0)
+        let len = Int(sqlite3_column_bytes(stmt, 0))
+        return bytes.map { Data(bytes: $0, count: len) }
+    }
+
+    private func snapshotAuxiliaryStateIntoDB() {
+        let encoder = JSONEncoder()
+        execute("BEGIN TRANSACTION;")
+        if let visasData = try? encoder.encode(VisaStore.shared.visas) {
+            writeBackupStateBlob(key: "visas", data: visasData)
+        }
+        if let borderData = try? encoder.encode(BorderStampOverrides.load()) {
+            writeBackupStateBlob(key: "border_overrides", data: borderData)
+        }
+        let chinaSnap = ChinaRegionsStore.shared.exportBackupSnapshot()
+        if let chinaData = try? encoder.encode(ChinaRegionsBackupPayload(areas: chinaSnap.payload, removed: chinaSnap.removed)) {
+            writeBackupStateBlob(key: "china_regions", data: chinaData)
+        }
+        let mustSeeSnap = MustSeeUserStore.shared.exportBackupSnapshot()
+        if let mustSeeData = try? encoder.encode(mustSeeSnap) {
+            writeBackupStateBlob(key: "must_see", data: mustSeeData)
+        }
+        if let blindBoxData = try? encoder.encode(BlindBoxStore.shared.savedPasses) {
+            writeBackupStateBlob(key: "blind_box", data: blindBoxData)
+        }
+        let ud = UserDefaults.standard
+        let prefs = UserPrefsBackupPayload(
+            profileName: ud.string(forKey: "wt16.profile.name"),
+            profileSubtitle: ud.string(forKey: "wt16.profile.subtitle"),
+            nationality: ud.string(forKey: "wt16.profile.nationality"),
+            passportTheme: ud.string(forKey: "wt16.passport.theme"),
+            dismissedTrips: ud.stringArray(forKey: "wt16.trips.dismissedDiscovered"),
+            photosLocatedOnly: ud.object(forKey: StintPhotoFetcher.locatedOnlyKey) as? Bool,
+            journeyRoute: ud.string(forKey: "wt16.journey.route"),
+            hapticsEnabled: ud.object(forKey: Haptics.enabledKey) as? Bool
+        )
+        if let prefsData = try? encoder.encode(prefs) {
+            writeBackupStateBlob(key: "user_prefs", data: prefsData)
+        }
+        execute("COMMIT;")
+    }
+
+    private func restoreAuxiliaryStateFromDB() -> [String] {
+        let decoder = JSONDecoder()
+        var summary: [String] = []
+
+        if let data = readBackupStateBlob(key: "visas"),
+           let visas = try? decoder.decode([VisaRecord].self, from: data) {
+            VisaStore.shared.replaceAll(visas)
+            if !visas.isEmpty { summary.append("\(visas.count) 张签证/护照") }
+        }
+        if let data = readBackupStateBlob(key: "border_overrides"),
+           let overrides = try? decoder.decode(BorderStampOverridePayload.self, from: data) {
+            BorderStampOverrides.save(overrides)
+            BorderStampOverrideStore.shared.bump()
+            let count = overrides.hiddenAutoIDs.count + overrides.editedAuto.count + overrides.manualStamps.count
+            if count > 0 { summary.append("\(count) 条护照印章调整") }
+        }
+        if let data = readBackupStateBlob(key: "china_regions"),
+           let china = try? decoder.decode(ChinaRegionsBackupPayload.self, from: data) {
+            ChinaRegionsStore.shared.restoreFromBackup(payload: china.areas, removed: china.removed)
+            let store = ChinaRegionsStore.shared
+            summary.append("省市县（\(store.litProvinceCount)省/\(store.litCityCount)市/\(store.litDistrictCount)县）")
+        }
+        if let data = readBackupStateBlob(key: "must_see"),
+           let mustSee = try? decoder.decode(MustSeeUserStore.BackupSnapshot.self, from: data) {
+            MustSeeUserStore.shared.restoreFromBackup(mustSee)
+            summary.append("此生必去记录")
+        }
+        if let data = readBackupStateBlob(key: "blind_box"),
+           let passes = try? decoder.decode([BoardingPass].self, from: data) {
+            BlindBoxStore.shared.replaceAll(passes)
+        }
+        if let data = readBackupStateBlob(key: "user_prefs"),
+           let prefs = try? decoder.decode(UserPrefsBackupPayload.self, from: data) {
+            let ud = UserDefaults.standard
+            if let v = prefs.profileName { ud.set(v, forKey: "wt16.profile.name") }
+            if let v = prefs.profileSubtitle { ud.set(v, forKey: "wt16.profile.subtitle") }
+            if let v = prefs.nationality { ud.set(v, forKey: "wt16.profile.nationality") }
+            if let v = prefs.passportTheme { ud.set(v, forKey: "wt16.passport.theme") }
+            if let v = prefs.dismissedTrips { ud.set(v, forKey: "wt16.trips.dismissedDiscovered") }
+            if let v = prefs.photosLocatedOnly { ud.set(v, forKey: StintPhotoFetcher.locatedOnlyKey) }
+            if let v = prefs.journeyRoute { ud.set(v, forKey: "wt16.journey.route") }
+            if let v = prefs.hapticsEnabled { ud.set(v, forKey: Haptics.enabledKey) }
+        }
+        return summary
+    }
 
     func exportBackupFile() -> URL? {
+        snapshotAuxiliaryStateIntoDB()
         execute("PRAGMA wal_checkpoint(TRUNCATE);")
         let fm = FileManager.default
         let target = fm.temporaryDirectory.appendingPathComponent("Waytrace16-Backup.sqlite")
@@ -222,7 +355,9 @@ final class DataStore: ObservableObject {
             openDatabase()
             createTables()
             reloadAll()
-            return (true, nil)
+            let extras = restoreAuxiliaryStateFromDB()
+            let extraSummary = extras.isEmpty ? nil : extras.joined(separator: "、")
+            return (true, extraSummary)
         } catch {
             if fm.fileExists(atPath: backupOldURL.path) {
                 try? fm.removeItem(at: dbURL)

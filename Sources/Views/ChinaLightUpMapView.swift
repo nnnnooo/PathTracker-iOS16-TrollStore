@@ -107,7 +107,7 @@ struct ChinaLightUpSection: View {
     }
 
     private func toggleFullScreen() {
-        UISelectionFeedbackGenerator().selectionChanged()
+        Haptics.selection()
         if !isFullScreen {
             // 进入全屏：先隐藏导航栏与底栏，再平滑展开地图
             hideChrome = true
@@ -246,7 +246,7 @@ struct ChinaLightUpSection: View {
                     Spacer(minLength: 4)
                     HStack(spacing: 8) {
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             isEditing.toggle()
                         } label: {
                             Image(systemName: isEditing ? "checkmark" : "pencil")
@@ -260,7 +260,7 @@ struct ChinaLightUpSection: View {
                         }
 
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
+                            Haptics.selection()
                             showSyncSheet = true
                         } label: {
                             ZStack(alignment: .topTrailing) {
@@ -326,7 +326,7 @@ struct ChinaLightUpSection: View {
                         ForEach(ChinaRegionLevel.allCases) { item in
                             Button {
                                 guard level != item else { return }
-                                UISelectionFeedbackGenerator().selectionChanged()
+                                Haptics.selection()
                                 selectedInfo = nil
                                 level = item
                             } label: {
@@ -400,7 +400,7 @@ struct ChinaLightUpSection: View {
 
             Button {
                 let nowLit = chinaStore.toggle(info.feature)
-                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                Haptics.medium()
                 selectedInfo = SelectedChinaRegionInfo(
                     feature: info.feature,
                     isLit: nowLit,
@@ -454,17 +454,17 @@ struct ChinaLightUpSection: View {
     private func handleRegionTap(_ tapped: ChinaGeoFeature) {
         if isEditing {
             let nowLit = chinaStore.toggle(tapped)
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            Haptics.medium()
             showToast(nowLit ? "已点亮：\(tapped.name)" : "已取消：\(tapped.name)")
             updateSelectedInfo(for: tapped, isLit: nowLit)
         } else if selectedInfo?.feature.id == tapped.id {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedInfo = nil
                 renderRevision &+= 1
             }
         } else {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
             let lit = chinaStore.isLit(tapped)
             updateSelectedInfo(for: tapped, isLit: lit)
         }
@@ -901,7 +901,7 @@ struct ChinaGitHubSyncSheet: View {
                 Spacer()
 
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.easeInOut(duration: 0.22)) {
                         showSyncConfig.toggle()
                     }
@@ -954,7 +954,7 @@ struct ChinaGitHubSyncSheet: View {
                     let active = selectedTab == tab
                     Button {
                         guard selectedTab != tab else { return }
-                        UISelectionFeedbackGenerator().selectionChanged()
+                        Haptics.selection()
                         selectedTab = tab
                         searchText = ""
                         newItemText = ""
@@ -1017,7 +1017,7 @@ struct ChinaGitHubSyncSheet: View {
                                     .lineLimit(1)
                                 Spacer()
                                 Button {
-                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    Haptics.light()
                                     withAnimation(.easeInOut(duration: 0.18)) {
                                         chinaStore.removeItem(rawKey, from: selectedTab)
                                     }
@@ -1098,7 +1098,7 @@ struct ChinaGitHubSyncSheet: View {
 
                 // 底部状态按钮：只展开配置，防止误触直接推送
                 Button {
-                    UISelectionFeedbackGenerator().selectionChanged()
+                    Haptics.selection()
                     withAnimation(.easeInOut(duration: 0.22)) {
                         showSyncConfig = true
                     }
@@ -1254,7 +1254,7 @@ struct ChinaGitHubSyncSheet: View {
     }
 
     private func addFeature(_ feat: ChinaGeoFeature) {
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Haptics.light()
         let key = selectedTab == .district ? feat.visitedKey : feat.name
         chinaStore.addItem(key, to: selectedTab)
         newItemText = ""
@@ -1263,7 +1263,7 @@ struct ChinaGitHubSyncSheet: View {
     private func addManualInput() {
         let trimmed = newItemText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        Haptics.light()
         if selectedTab == .district,
            let matched = candidatePool.first(where: { $0.name == trimmed }) {
             chinaStore.addItem(matched.visitedKey, to: .district)

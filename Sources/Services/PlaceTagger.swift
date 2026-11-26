@@ -280,19 +280,23 @@ final class PlaceTagger: ObservableObject {
     }
 
     private func nearestLandmark(around location: CLLocation) async -> MKMapItem? {
-        if let item = await nearestPOI(around: location, radius: 200,
+        // Convert WGS-84 to GCJ-02 onMap inside China so MapKit POI distances are not skewed by ~300–600m offset
+        let mapCoord = location.coordinate.onMap
+        let mapLoc = CLLocation(latitude: mapCoord.latitude, longitude: mapCoord.longitude)
+
+        if let item = await nearestPOI(around: location, radius: 120,
                                        filter: MKPointOfInterestFilter(including: PlaceCategory.landmarkCategories)) {
             return item
         }
         let request = MKLocalSearch.Request()
         request.naturalLanguageQuery = "景点"
         request.resultTypes = .pointOfInterest
-        request.region = MKCoordinateRegion(center: location.coordinate, latitudinalMeters: 1000, longitudinalMeters: 1000)
+        request.region = MKCoordinateRegion(center: mapCoord, latitudinalMeters: 600, longitudinalMeters: 600)
         guard let response = try? await MKLocalSearch(request: request).start() else { return nil }
         return response.mapItems
             .filter { PlaceCategory.isSight($0.pointOfInterestCategory) }
-            .map { ($0, $0.placemark.location?.distance(from: location) ?? .greatestFiniteMagnitude) }
-            .filter { $0.1 <= 500 }
+            .map { ($0, $0.placemark.location?.distance(from: mapLoc) ?? .greatestFiniteMagnitude) }
+            .filter { $0.1 <= 220 }
             .min { PlaceCategory.rankingScore($0.0.pointOfInterestCategory, distance: $0.1)
                     < PlaceCategory.rankingScore($1.0.pointOfInterestCategory, distance: $1.1) }?.0
     }
@@ -303,12 +307,14 @@ final class PlaceTagger: ObservableObject {
         filter: MKPointOfInterestFilter,
         excluding excluded: Set<MKPointOfInterestCategory> = []
     ) async -> MKMapItem? {
-        let request = MKLocalPointsOfInterestRequest(center: location.coordinate, radius: radius)
+        let mapCoord = location.coordinate.onMap
+        let mapLoc = CLLocation(latitude: mapCoord.latitude, longitude: mapCoord.longitude)
+        let request = MKLocalPointsOfInterestRequest(center: mapCoord, radius: radius)
         request.pointOfInterestFilter = filter
         guard let response = try? await MKLocalSearch(request: request).start() else { return nil }
         return response.mapItems
             .filter { item in item.pointOfInterestCategory.map { !excluded.contains($0) } ?? true }
-            .map { ($0, $0.placemark.location?.distance(from: location) ?? .greatestFiniteMagnitude) }
+            .map { ($0, $0.placemark.location?.distance(from: mapLoc) ?? .greatestFiniteMagnitude) }
             .filter { $0.1 <= radius }
             .min { PlaceCategory.rankingScore($0.0.pointOfInterestCategory, distance: $0.1)
                     < PlaceCategory.rankingScore($1.0.pointOfInterestCategory, distance: $1.1) }?.0

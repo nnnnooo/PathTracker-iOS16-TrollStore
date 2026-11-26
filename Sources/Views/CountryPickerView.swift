@@ -164,7 +164,7 @@ private struct CountrySearchListView: View {
 
     private func row(_ choice: CountryChoice) -> some View {
         Button {
-            UISelectionFeedbackGenerator().selectionChanged()
+            Haptics.selection()
             selection = choice.code
             dismiss()
         } label: {

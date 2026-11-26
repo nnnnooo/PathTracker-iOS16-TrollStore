@@ -167,9 +167,12 @@ struct WorldFootprintMapView: UIViewRepresentable {
     func makeUIView(context: Context) -> MKMapView {
         let map = MKMapView()
         map.delegate = context.coordinator
-        map.overrideUserInterfaceStyle = .dark
-        map.mapType = .mutedStandard
-        map.pointOfInterestFilter = .excludingAll
+        let config = MKStandardMapConfiguration(elevationStyle: .realistic, emphasisStyle: .muted)
+        config.pointOfInterestFilter = .excludingAll
+        map.preferredConfiguration = config
+        map.showsCompass = false
+        map.showsScale = false
+        map.isPitchEnabled = false
         return map
     }
 
@@ -197,10 +200,17 @@ struct WorldFootprintMapView: UIViewRepresentable {
                 if let last = line.last { coords.append(last) }
             }
         } else {
+            // Use fine ~0.18° grid (~18 km) so intercontinental footprints (e.g. China + Canada) don't over-collapse domestic cities
+            let validStays = stays.filter { $0.latitude.isFinite && $0.longitude.isFinite }
+            let cell = 0.18
             var buckets: [String: Stay] = [:]
-            for stay in stays {
-                let key = "\(Int((stay.latitude * 12).rounded()))_\(Int((stay.longitude * 12).rounded()))"
-                if buckets[key] == nil { buckets[key] = stay }
+            for stay in validStays {
+                let key = "\(Int((stay.latitude / cell).rounded()))_\(Int((stay.longitude / cell).rounded()))"
+                if let existing = buckets[key] {
+                    if stay.isLandmark && !existing.isLandmark { buckets[key] = stay }
+                } else {
+                    buckets[key] = stay
+                }
             }
             for stay in buckets.values.prefix(500) {
                 let ann = StayAnnotation(stay: stay)
@@ -214,7 +224,6 @@ struct WorldFootprintMapView: UIViewRepresentable {
             let lons = coords.map(\.longitude).sorted()
             let rawLonSpan = lons.last! - lons.first!
             if rawLonSpan > 150 {
-                // Intercontinental footprints (e.g. China + Canada): center on the densest cluster (median) so highlights fill the card
                 let medLat = lats[lats.count / 2]
                 let medLon = lons[lons.count / 2]
                 let localCoords = coords.filter { abs($0.longitude - medLon) < 60 }
@@ -227,8 +236,8 @@ struct WorldFootprintMapView: UIViewRepresentable {
                 let region = MKCoordinateRegion(
                     center: CLLocationCoordinate2D(latitude: (minLat + maxLat) / 2, longitude: (minLon + maxLon) / 2),
                     span: MKCoordinateSpan(
-                        latitudeDelta: min(75, max(24, (maxLat - minLat) * 1.45)),
-                        longitudeDelta: min(95, max(30, (maxLon - minLon) * 1.45))
+                        latitudeDelta: min(75, max(24, (maxLat - minLat) * 1.4)),
+                        longitudeDelta: min(95, max(30, (maxLon - minLon) * 1.4))
                     )
                 )
                 map.setRegion(region, animated: false)
@@ -236,8 +245,8 @@ struct WorldFootprintMapView: UIViewRepresentable {
                 let region = MKCoordinateRegion(
                     center: CLLocationCoordinate2D(latitude: (lats.first! + lats.last!) / 2, longitude: (lons.first! + lons.last!) / 2),
                     span: MKCoordinateSpan(
-                        latitudeDelta: min(120, max(12, (lats.last! - lats.first!) * 1.45)),
-                        longitudeDelta: min(180, max(16, rawLonSpan * 1.45))
+                        latitudeDelta: min(120, max(12, (lats.last! - lats.first!) * 1.4)),
+                        longitudeDelta: min(180, max(16, rawLonSpan * 1.4))
                     )
                 )
                 map.setRegion(region, animated: false)
@@ -248,25 +257,24 @@ struct WorldFootprintMapView: UIViewRepresentable {
     final class Coordinator: NSObject, MKMapViewDelegate {
         var lastSignature = ""
 
-        private lazy var glowDotImage: UIImage = {
-            let size: CGFloat = 20
-            return UIGraphicsImageRenderer(size: CGSize(width: size, height: size)).image { ctx in
-                let colors = [
-                    UIColor.systemOrange.withAlphaComponent(0.70).cgColor,
-                    UIColor.systemOrange.withAlphaComponent(0.0).cgColor
-                ] as CFArray
-                if let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors, locations: [0.0, 1.0]) {
-                    ctx.cgContext.drawRadialGradient(
-                        grad,
-                        startCenter: CGPoint(x: 10, y: 10), startRadius: 1,
-                        endCenter: CGPoint(x: 10, y: 10), endRadius: 10,
-                        options: []
-                    )
-                }
-                UIColor(red: 1.0, green: 0.94, blue: 0.68, alpha: 1.0).setFill()
-                ctx.cgContext.fillEllipse(in: CGRect(x: 6.5, y: 6.5, width: 7, height: 7))
+        private lazy var footprintDotImage: UIImage = Self.makeFootprintDotImage()
+
+        private static func makeFootprintDotImage() -> UIImage {
+            let outerDiameter: CGFloat = 18
+            let innerDiameter: CGFloat = 12
+            let inset = (outerDiameter - innerDiameter) / 2
+            return UIGraphicsImageRenderer(size: CGSize(width: outerDiameter, height: outerDiameter)).image { _ in
+                // Soft translucent sky-blue outer halo (no solid white stroke)
+                let outerRect = CGRect(x: 0, y: 0, width: outerDiameter, height: outerDiameter)
+                UIColor(red: 0.22, green: 0.62, blue: 1.0, alpha: 0.22).setFill()
+                UIBezierPath(ovalIn: outerRect).fill()
+
+                // Translucent sky-blue core so overlapping footprints naturally deepen
+                let innerRect = CGRect(x: inset, y: inset, width: innerDiameter, height: innerDiameter)
+                UIColor(red: 0.14, green: 0.54, blue: 0.96, alpha: 0.48).setFill()
+                UIBezierPath(ovalIn: innerRect).fill()
             }
-        }()
+        }
 
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
             if let poly = overlay as? StyledPolyline {
@@ -281,12 +289,12 @@ struct WorldFootprintMapView: UIViewRepresentable {
 
         func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
             guard let stayAnn = annotation as? StayAnnotation else { return nil }
-            let id = "worldDot"
+            let id = "worldFootprintDot"
             let view = mapView.dequeueReusableAnnotationView(withIdentifier: id)
                 ?? MKAnnotationView(annotation: stayAnn, reuseIdentifier: id)
             view.annotation = stayAnn
             view.canShowCallout = true
-            view.image = glowDotImage
+            view.image = footprintDotImage
             view.displayPriority = .required
             return view
         }
