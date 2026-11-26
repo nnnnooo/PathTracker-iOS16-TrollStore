@@ -4,7 +4,10 @@ on:
   push:
     branches: [ main ]
     paths:
-      - 'Waytrace16/**'
+      - 'Sources/**'
+      - 'Resources/**'
+      - 'project.yml'
+      - 'build_local_ipa.sh'
       - '.github/workflows/build-ipa.yml'
   workflow_dispatch:
 
@@ -15,9 +18,6 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
-    defaults:
-      run:
-        working-directory: Waytrace16
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,16 +26,6 @@ jobs:
         run: |
           xcodebuild -version
           xcodebuild -showsdks
-
-      - name: Prepare App Icon & Country Borders from Upstream Assets
-        run: |
-          mkdir -p Resources/Assets.xcassets/AppIcon.appiconset
-          if [ -f ../RecordPath/Assets.xcassets/AppIcon.appiconset/AppIcon-light.png ]; then
-            cp ../RecordPath/Assets.xcassets/AppIcon.appiconset/AppIcon-light.png Resources/Assets.xcassets/AppIcon.appiconset/AppIcon.png
-          fi
-          if [ -f ../RecordPath/Resources/CountryBorders.json ]; then
-            cp ../RecordPath/Resources/CountryBorders.json Resources/CountryBorders.json
-          fi
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -68,5 +58,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Waytrace-iOS16-TrollStore
-          path: Waytrace16/Waytrace-iOS16-TrollStore.ipa
+          path: Waytrace-iOS16-TrollStore.ipa
           retention-days: 30

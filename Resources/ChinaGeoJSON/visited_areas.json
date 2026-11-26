@@ -1,0 +1,7 @@
+{
+  "_comment": "足迹地图初始模板配置（空）。可在 App 内自动匹配足迹、手动点亮或通过 GitHub 同步个人配置。",
+  "district": [],
+  "city": [],
+  "province": [],
+  "municipalities": []
+}
