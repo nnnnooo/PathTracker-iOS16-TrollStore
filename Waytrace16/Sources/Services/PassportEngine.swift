@@ -1128,7 +1128,8 @@ enum PassportEngine {
         if let first = allSorted.first?.arrival {
             let firstYear = cal.component(.year, from: first)
             let thisYear = cal.component(.year, from: Date())
-            for year in max(firstYear, thisYear - 40)...thisYear {
+            if firstYear <= thisYear {
+                for year in max(firstYear, thisYear - 40)...thisYear {
                 guard let midnight = cal.date(from: DateComponents(year: year, month: 1, day: 1)), midnight <= Date() else { continue }
                 func gap(_ stay: Stay) -> TimeInterval {
                     let end = max(stay.departure ?? stay.arrival, stay.arrival)
@@ -1149,6 +1150,7 @@ enum PassportEngine {
                         value: String(year)
                     ))
                 }
+            }
             }
         }
 

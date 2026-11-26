@@ -1,7 +1,7 @@
 import SwiftUI
 import UIKit
 import Photos
-import HealthKit
+import CoreMotion
 import UniformTypeIdentifiers
 
 /// 1:1 Original PathTracker (漫迹) Settings Page adapted for iOS 16 & TrollStore.
@@ -18,6 +18,7 @@ struct SettingsView: View {
     @AppStorage("wt16.notify.arrivals") private var notifyArrivals: Bool = true
     @AppStorage("wt16.notify.milestones") private var notifyMilestones: Bool = true
     @AppStorage("wt16.notify.weekly") private var notifyWeekly: Bool = true
+    @AppStorage(PhotoFootprints.autoImportEnabledKey) private var autoImportPhotos: Bool = false
 
     private enum ImportKind: Identifiable {
         case gpx, backup
@@ -34,7 +35,7 @@ struct SettingsView: View {
     @State private var isImportingGPX = false
     @State private var importProgressText: String?
     @State private var alertMessage: String?
-    @State private var healthNeedsRequest: Bool = true
+    @State private var motionAuthStatus: CMAuthorizationStatus = CMPedometer.authorizationStatus()
 
     private var passportTheme: PassportTheme {
         PassportTheme(rawValue: passportThemeRaw) ?? .obsidian
@@ -118,8 +119,8 @@ struct SettingsView: View {
             } message: {
                 Text("所有轨迹、地点、旅程和隐私区域都会从这台设备永久删除，且无法恢复。")
             }
-            .task {
-                await refreshHealthRequestStatus()
+            .onAppear {
+                motionAuthStatus = CMPedometer.authorizationStatus()
             }
         }
     }
@@ -269,7 +270,12 @@ struct SettingsView: View {
                 Text("全天自动").tag(true)
                 Text("仅手动").tag(false)
             } label: {
-                Label("记录方式", systemImage: "location.fill")
+                HStack(spacing: 12) {
+                    Image(systemName: "location.fill")
+                        .foregroundColor(.blue)
+                        .frame(width: 24)
+                    Text("记录方式")
+                }
             }
             .onChange(of: engine.isEnabled) { _ in
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -283,7 +289,12 @@ struct SettingsView: View {
                     Text(statusText).foregroundColor(.secondary)
                 }
             } label: {
-                Label("当前状态", systemImage: "waveform.path.ecg")
+                HStack(spacing: 12) {
+                    Image(systemName: "waveform.path.ecg")
+                        .foregroundColor(.blue)
+                        .frame(width: 24)
+                    Text("当前状态")
+                }
             }
 
             if engine.isEnabled {
@@ -292,7 +303,12 @@ struct SettingsView: View {
                         Text(p.title).tag(p)
                     }
                 } label: {
-                    Label("记录精度", systemImage: "scope")
+                    HStack(spacing: 12) {
+                        Image(systemName: "scope")
+                            .foregroundColor(.blue)
+                            .frame(width: 24)
+                        Text("记录精度")
+                    }
                 }
                 .onChange(of: engine.precision) { _ in
                     UISelectionFeedbackGenerator().selectionChanged()
@@ -357,13 +373,13 @@ struct SettingsView: View {
             }
 
             permissionRow(
-                title: "健康（步数）",
-                symbol: "heart.circle.fill",
+                title: "运动与步数",
+                symbol: "figure.walk.circle.fill",
                 tint: .pink,
-                value: healthAuthText,
-                needsAction: HKHealthStore.isHealthDataAvailable() && healthNeedsRequest
+                value: motionAuthText,
+                needsAction: motionAuthStatus != .authorized
             ) {
-                requestOrOpenHealth()
+                requestOrOpenMotion()
             }
 
             permissionRow(
@@ -422,8 +438,9 @@ struct SettingsView: View {
                     Label(zone.name, systemImage: "eye.slash")
                 }
                 .onDelete { offsets in
-                    for idx in offsets {
-                        store.deletePrivacyZone(id: store.privacyZones[idx].id)
+                    let ids = offsets.compactMap { store.privacyZones.indices.contains($0) ? store.privacyZones[$0].id : nil }
+                    for id in ids {
+                        store.deletePrivacyZone(id: id)
                     }
                 }
             }
@@ -436,11 +453,52 @@ struct SettingsView: View {
 
     // MARK: - 8. Data Management
 
+    private var failedStaysCount: Int {
+        store.stays.filter { Self.isUnresolvedStay($0) }.count
+    }
+
+    fileprivate static func isUnresolvedStay(_ stay: Stay) -> Bool {
+        if stay.tagState == .failed { return true }
+        if stay.customName == nil && (stay.countryCode == nil || (stay.city == nil && stay.placeName == nil)) {
+            return true
+        }
+        return false
+    }
+
     private var dataSection: some View {
         Section {
-            LabeledContent("轨迹片段", value: "\(store.chunks.count)")
-            LabeledContent("到访记录", value: "\(store.stays.count)")
-            LabeledContent("旅程与记录", value: "\(store.trips.count)")
+            LabeledContent {
+                Text("\(store.chunks.count)").monospacedDigit().foregroundColor(.secondary)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "point.topleft.down.curvedto.point.filled.bottomright.up")
+                        .foregroundColor(.blue)
+                        .frame(width: 24)
+                    Text("轨迹片段")
+                }
+            }
+
+            LabeledContent {
+                Text("\(store.stays.count)").monospacedDigit().foregroundColor(.secondary)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "mappin.and.ellipse")
+                        .foregroundColor(.pink)
+                        .frame(width: 24)
+                    Text("到访记录")
+                }
+            }
+
+            LabeledContent {
+                Text("\(store.trips.count)").monospacedDigit().foregroundColor(.secondary)
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "suitcase.rolling.fill")
+                        .foregroundColor(.indigo)
+                        .frame(width: 24)
+                    Text("旅程与记录")
+                }
+            }
 
             if let url = exportedGPXURL {
                 ShareLink(item: url) {
@@ -474,20 +532,69 @@ struct SettingsView: View {
             }
             .disabled(isImportingGPX)
 
+            Toggle(isOn: $autoImportPhotos) {
+                Label("自动获取新增照片", systemImage: "photo.on.rectangle.angled")
+            }
+            .onChange(of: autoImportPhotos) { enabled in
+                if enabled {
+                    Task {
+                        await PhotoFootprints.importNewPhotosIfEnabled(into: store, tagger: tagger, force: true)
+                    }
+                }
+            }
+
             Button {
                 showPhotoImport = true
             } label: {
                 Label("重新从相册导入", systemImage: "photo.stack")
             }
 
+            NavigationLink {
+                FailedTaggedStaysView()
+            } label: {
+                HStack {
+                    Label("识别失败 / 未命名地点", systemImage: "exclamationmark.triangle")
+                    Spacer()
+                    Text("\(failedStaysCount)")
+                        .font(.subheadline.monospacedDigit())
+                        .foregroundColor(failedStaysCount > 0 ? .orange : .secondary)
+                }
+            }
+
             Button {
+                retagged = true
                 tagger.retryFailed()
                 tagger.enqueue()
-                withAnimation { retagged = true }
             } label: {
-                Label(retagged ? "已开始重新识别" : "重新识别未命名的地点", systemImage: "arrow.clockwise")
+                HStack(spacing: 8) {
+                    Label {
+                        if tagger.isTagging {
+                            Text(tagger.progressText ?? "正在识别地点（剩余 \(tagger.pendingCount) 条）…")
+                                .foregroundColor(.primary)
+                        } else if retagged && tagger.pendingCount == 0 {
+                            Text("地点识别已完成")
+                                .foregroundColor(.green)
+                        } else {
+                            Text("重新识别未命名的地点")
+                        }
+                    } icon: {
+                        if tagger.isTagging {
+                            ProgressView()
+                                .scaleEffect(0.85)
+                        } else {
+                            Image(systemName: (retagged && tagger.pendingCount == 0) ? "checkmark.circle.fill" : "arrow.clockwise")
+                                .foregroundColor((retagged && tagger.pendingCount == 0) ? .green : .blue)
+                        }
+                    }
+                    Spacer()
+                    if tagger.isTagging && tagger.pendingCount > 0 {
+                        Text("剩 \(tagger.pendingCount) 条")
+                            .font(.caption.monospacedDigit())
+                            .foregroundColor(.secondary)
+                    }
+                }
             }
-            .disabled(retagged)
+            .disabled(tagger.isTagging)
 
             Button(role: .destructive) {
                 showClearConfirm = true
@@ -497,7 +604,7 @@ struct SettingsView: View {
         } header: {
             Text("数据")
         } footer: {
-            Text("GPX 可以导入 AllTrails、Strava、Google Earth 等应用。TrollStore 环境下无法使用 iCloud 同步，建议定期导出 .sqlite 备份。")
+            Text("开启“自动获取新增照片”后，每次打开或切回 App 时会自动增量导入（仅检查新照片元数据，冷却 5 分钟，几乎不耗电）。识别区域进度按 10km 网格合并计数。")
         }
     }
 
@@ -556,52 +663,32 @@ struct SettingsView: View {
         .buttonStyle(.plain)
     }
 
-    private var healthAuthText: String {
-        guard HKHealthStore.isHealthDataAvailable() else { return "此设备不支持" }
-        return healthNeedsRequest ? "轻点授权" : "在健康中管理"
+    private var motionAuthText: String {
+        guard CMPedometer.isStepCountingAvailable() else { return "此设备不支持" }
+        switch motionAuthStatus {
+        case .authorized: return "已允许"
+        case .denied, .restricted: return "未允许"
+        case .notDetermined: return "轻点授权"
+        @unknown default: return "去设置"
+        }
     }
 
-    private func refreshHealthRequestStatus() async {
-        guard HKHealthStore.isHealthDataAvailable(),
-              let stepType = HKObjectType.quantityType(forIdentifier: .stepCount) else {
-            healthNeedsRequest = false
+    private func requestOrOpenMotion() {
+        guard CMPedometer.isStepCountingAvailable() else {
+            alertMessage = "当前设备不支持运动协处理器计步。"
             return
         }
-        let healthStore = HKHealthStore()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            healthStore.getRequestStatusForAuthorization(toShare: [], read: [stepType]) { status, _ in
+        if motionAuthStatus == .notDetermined {
+            let pedometer = CMPedometer()
+            let now = Date()
+            let start = Calendar.current.startOfDay(for: now)
+            pedometer.queryPedometerData(from: start, to: now) { _, _ in
                 Task { @MainActor in
-                    self.healthNeedsRequest = (status == .shouldRequest)
-                    cont.resume()
+                    self.motionAuthStatus = CMPedometer.authorizationStatus()
                 }
             }
-        }
-    }
-
-    private func requestOrOpenHealth() {
-        guard HKHealthStore.isHealthDataAvailable(),
-              let stepType = HKObjectType.quantityType(forIdentifier: .stepCount) else {
-            alertMessage = "当前设备不支持 Apple 健康数据。"
-            return
-        }
-        if !healthNeedsRequest {
-            if let url = URL(string: "x-apple-health://") {
-                UIApplication.shared.open(url)
-            }
-            return
-        }
-        let healthStore = HKHealthStore()
-        healthStore.requestAuthorization(toShare: [], read: [stepType]) { _, error in
-            Task { @MainActor in
-                if let error {
-                    alertMessage = "无法拉起系统健康授权（\(error.localizedDescription)），请前往“健康”App 中手动开启。"
-                    if let url = URL(string: "x-apple-health://") {
-                        UIApplication.shared.open(url, options: [:], completionHandler: nil)
-                    }
-                } else {
-                    await refreshHealthRequestStatus()
-                }
-            }
+        } else {
+            openSystemSettings()
         }
     }
 
@@ -711,6 +798,131 @@ private struct LocalPrivacyPolicyView: View {
 
 /// Native UIDocumentPickerViewController with `asCopy: true`:
 /// 100% reliable on iOS 16 inside sheets & TrollStore (no security-scope or iCloud permission failures).
+// MARK: - Failed / Unresolved Photo & Location Stays Manager
+
+private struct FailedTaggedStaysView: View {
+    @EnvironmentObject private var store: DataStore
+    @EnvironmentObject private var tagger: PlaceTagger
+    @State private var editingStay: Stay?
+
+    private var failedStays: [Stay] {
+        store.stays
+            .filter { SettingsView.isUnresolvedStay($0) }
+            .sorted { $0.arrival > $1.arrival }
+    }
+
+    var body: some View {
+        Group {
+            if failedStays.isEmpty {
+                VStack(spacing: 12) {
+                    Image(systemName: "checkmark.seal.fill")
+                        .font(.system(size: 44))
+                        .foregroundColor(.green)
+                    Text("没有识别失败的地点")
+                        .font(.headline)
+                    Text("所有定位与相册足迹都已成功识别或手动命名。")
+                        .font(.subheadline)
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(.systemGroupedBackground))
+            } else {
+                List {
+                    Section {
+                        ForEach(failedStays) { stay in
+                            Button {
+                                editingStay = stay
+                            } label: {
+                                FailedStayRow(stay: stay)
+                            }
+                            .buttonStyle(.plain)
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) {
+                                    store.deleteStay(id: stay.id)
+                                } label: {
+                                    Label("删除", systemImage: "trash")
+                                }
+                            }
+                        }
+                    } header: {
+                        Text("共 \(failedStays.count) 条 · 点击可手动命名或删除")
+                    } footer: {
+                        Text("多为海上、偏远无网络区域或海外坐标超出离线边界的照片，点击即可手动填写地点名称，或左滑删除。")
+                    }
+                }
+            }
+        }
+        .navigationTitle("识别失败的地点")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            if !failedStays.isEmpty {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button("重试识别") {
+                        tagger.retryFailed()
+                    }
+                    .disabled(tagger.isTagging)
+                }
+            }
+        }
+        .sheet(item: $editingStay) { stay in
+            StayDetailSheet(stay: stay)
+        }
+    }
+}
+
+private struct FailedStayRow: View {
+    let stay: Stay
+    @State private var thumb: UIImage?
+
+    var body: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                if let thumb {
+                    Image(uiImage: thumb)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Color(.tertiarySystemFill)
+                    Image(systemName: stay.isFromPhotos ? "photo" : "mappin.slash")
+                        .foregroundColor(.secondary)
+                }
+            }
+            .frame(width: 54, height: 54)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(stay.displayName)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Text(stay.isFromPhotos ? "相册" : "定位")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundColor(stay.isFromPhotos ? .pink : .blue)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background((stay.isFromPhotos ? Color.pink : Color.blue).opacity(0.12), in: Capsule())
+                }
+                Text("\(Formatters.dayTitle(stay.arrival)) \(Formatters.timeHM(stay.arrival))")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.secondary)
+                Text(String(format: "%.4f, %.4f", stay.latitude, stay.longitude))
+                    .font(.caption2.monospacedDigit())
+                    .foregroundColor(Color(.tertiaryLabel))
+            }
+            Spacer()
+            Image(systemName: "chevron.right")
+                .font(.caption.weight(.semibold))
+                .foregroundColor(Color(.tertiaryLabel))
+        }
+        .padding(.vertical, 2)
+        .task(id: stay.id) {
+            let items = await StintPhotoFetcher.shared.stayPhotoItems(for: stay)
+            thumb = items.first?.thumbnail
+        }
+    }
+}
+
 private struct NativeDocumentPicker: UIViewControllerRepresentable {
     let allowMultiple: Bool
     let onPick: ([URL]) -> Void

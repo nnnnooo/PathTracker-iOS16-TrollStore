@@ -833,16 +833,19 @@ private struct InkWornModifier: ViewModifier {
             content
                 .mask {
                     Canvas { context, size in
+                        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
                         var random = SeededRandom(seed &+ 7)
                         context.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.black))
                         context.blendMode = .destinationOut
                         let grain = min(size.width, size.height) / 140
                         let speckCount = min(220, Int(Double(size.width * size.height) / 90.0 * wear))
+                        var specks = Path()
                         for _ in 0..<speckCount {
                             let r = (0.3 + random.unit() * 0.9) * grain
                             let pt = CGPoint(x: random.unit() * size.width, y: random.unit() * size.height)
-                            context.fill(Path(ellipseIn: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2)), with: .color(.black))
+                            specks.addEllipse(in: CGRect(x: pt.x - r, y: pt.y - r, width: r * 2, height: r * 2))
                         }
+                        context.fill(specks, with: .color(.black))
                         for _ in 0..<2 {
                             let r = min(size.width, size.height) * (0.06 + random.unit() * 0.08)
                             let pt = CGPoint(x: random.unit() * size.width, y: random.unit() * size.height)
@@ -910,11 +913,16 @@ struct StampPaperView: View {
                     )
                 }
             case .book:
-                for y in stride(from: 12, to: size.height, by: 16) {
-                    for x in stride(from: 12, to: size.width, by: 16) {
-                        context.fill(Path(ellipseIn: CGRect(x: x, y: y, width: 1.4, height: 1.4)), with: .color(ink.opacity(0.6)))
+                guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return }
+                let maxW = min(size.width, 4000)
+                let maxH = min(size.height, 20000)
+                var dots = Path()
+                for y in stride(from: 12, to: maxH, by: 16) {
+                    for x in stride(from: 12, to: maxW, by: 16) {
+                        dots.addEllipse(in: CGRect(x: x, y: y, width: 1.4, height: 1.4))
                     }
                 }
+                context.fill(dots, with: .color(ink.opacity(0.6)))
             }
         }
     }

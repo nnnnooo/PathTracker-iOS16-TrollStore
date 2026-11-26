@@ -10,10 +10,10 @@ enum ChinaMapLayoutConfig {
     static let fallbackCenter = CLLocationCoordinate2D(latitude: 35.0, longitude: 104.5)
     static let fallbackLatDelta: CLLocationDegrees = 34.0
     static let fallbackLonDelta: CLLocationDegrees = 48.0
-    /// Metal 矢量描边线宽（pt，任意缩放级别均保持视网膜级锐利）
-    static let litBorderLineWidth: CGFloat = 0.95
-    static let districtBorderLineWidth: CGFloat = 0.65
-    static let highlightBorderLineWidth: CGFloat = 1.75
+    /// 屏幕视觉描边线宽（pt，随缩放自动收细，兼顾清晰度与零发热）
+    static let litBorderScreenPoints: CGFloat = 0.90
+    static let districtBorderScreenPoints: CGFloat = 0.65
+    static let highlightBorderScreenPoints: CGFloat = 1.65
 }
 
 // MARK: - Selected Region Visit Info
@@ -35,20 +35,24 @@ private struct SelectedChinaRegionInfo: Equatable {
 struct ChinaLightUpTabView: View {
     @Binding var showingSettings: Bool
     @State private var isFullScreen = false
+    @State private var hideChrome = false
 
     var body: some View {
         NavigationStack {
-            ChinaLightUpSection(isFullScreen: $isFullScreen)
-                .background(Color(.systemGroupedBackground).ignoresSafeArea())
-                .navigationTitle("省市县")
-                .navigationBarTitleDisplayMode(.large)
-                .toolbar(isFullScreen ? .hidden : .visible, for: .navigationBar)
-                .toolbar(isFullScreen ? .hidden : .visible, for: .tabBar)
-                .toolbar {
-                    ToolbarItem(placement: .navigationBarTrailing) {
-                        ProfileToolbarButton(showingSettings: $showingSettings)
-                    }
+            ChinaLightUpSection(
+                isFullScreen: $isFullScreen,
+                hideChrome: $hideChrome
+            )
+            .background(Color(.systemGroupedBackground).ignoresSafeArea())
+            .navigationTitle("省市县")
+            .navigationBarTitleDisplayMode(.large)
+            .toolbar(hideChrome ? .hidden : .automatic, for: .navigationBar)
+            .toolbar(hideChrome ? .hidden : .automatic, for: .tabBar)
+            .toolbar {
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    ProfileToolbarButton(showingSettings: $showingSettings)
                 }
+            }
         }
     }
 }
@@ -57,6 +61,7 @@ struct ChinaLightUpTabView: View {
 
 struct ChinaLightUpSection: View {
     @Binding var isFullScreen: Bool
+    @Binding var hideChrome: Bool
 
     @EnvironmentObject private var store: DataStore
     @EnvironmentObject private var chinaStore: ChinaRegionsStore
@@ -72,8 +77,9 @@ struct ChinaLightUpSection: View {
     @State private var toastText: String?
     @State private var selectedInfo: SelectedChinaRegionInfo?
 
-    init(isFullScreen: Binding<Bool> = .constant(false)) {
+    init(isFullScreen: Binding<Bool> = .constant(false), hideChrome: Binding<Bool> = .constant(false)) {
         _isFullScreen = isFullScreen
+        _hideChrome = hideChrome
     }
 
     private var litCountForCurrentLevel: Int {
@@ -97,6 +103,27 @@ struct ChinaLightUpSection: View {
         case .district: return chinaStore.visitedDistricts
         case .city: return chinaStore.visitedCities.union(chinaStore.visitedMunicipalities)
         case .province: return chinaStore.visitedProvinces.union(chinaStore.visitedMunicipalities)
+        }
+    }
+
+    private func toggleFullScreen() {
+        UISelectionFeedbackGenerator().selectionChanged()
+        if !isFullScreen {
+            // 进入全屏：先隐藏导航栏与底栏，再平滑展开地图
+            hideChrome = true
+            withAnimation(.easeInOut(duration: 0.25)) {
+                isFullScreen = true
+            }
+        } else {
+            // 退出全屏：先恢复底栏与导航栏占位（不带动画，避免地图穿到底部导航栏后面卡顿），再平滑收回卡片
+            var t = Transaction()
+            t.disablesAnimations = true
+            withTransaction(t) {
+                hideChrome = false
+            }
+            withAnimation(.easeInOut(duration: 0.24)) {
+                isFullScreen = false
+            }
         }
     }
 
@@ -124,10 +151,10 @@ struct ChinaLightUpSection: View {
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 2)
-                .transition(.opacity.combined(with: .move(edge: .top)))
+                .transition(.opacity)
             }
 
-            // Single persistent MKMapView instance: stays fixed in place while its frame expands smoothly to full screen
+            // Single persistent MKMapView instance
             mapContainer(interactive: true, fullScreen: isFullScreen)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .clipShape(RoundedRectangle(cornerRadius: isFullScreen ? 0 : 28, style: .continuous))
@@ -139,7 +166,7 @@ struct ChinaLightUpSection: View {
                 }
                 .padding(.horizontal, isFullScreen ? 0 : 16)
                 .padding(.bottom, isFullScreen ? 0 : 16)
-                .ignoresSafeArea(edges: isFullScreen ? .all : [])
+                .ignoresSafeArea(edges: hideChrome ? .all : [])
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .task(id: level) {
@@ -155,7 +182,7 @@ struct ChinaLightUpSection: View {
             renderRevision &+= 1
         }
         .sheet(isPresented: $showSyncSheet) {
-            ChinaGitHubSyncSheet(level: level, features: features)
+            ChinaGitHubSyncSheet(initialLevel: level)
         }
     }
 
@@ -185,7 +212,7 @@ struct ChinaLightUpSection: View {
             }
 
             VStack(spacing: 8) {
-                // Top Control Row (full-screen shows stats at top-left matching embedded header)
+                // Top Control Row
                 HStack(alignment: .center, spacing: 8) {
                     if fullScreen {
                         VStack(alignment: .leading, spacing: 1) {
@@ -252,10 +279,7 @@ struct ChinaLightUpSection: View {
                         }
 
                         Button {
-                            UISelectionFeedbackGenerator().selectionChanged()
-                            withAnimation(.spring(response: 0.36, dampingFraction: 0.88)) {
-                                isFullScreen.toggle()
-                            }
+                            toggleFullScreen()
                         } label: {
                             Image(systemName: fullScreen ? "xmark" : "arrow.up.left.and.arrow.down.right")
                                 .font(.footnote.weight(.bold))
@@ -268,7 +292,6 @@ struct ChinaLightUpSection: View {
                 }
                 .padding(.top, fullScreen ? 56 : 12)
 
-                // Edit-mode hint in full-screen sits cleanly below top stats bar
                 if fullScreen && isEditing {
                     Label("点击区域点亮/取消", systemImage: "hand.tap.fill")
                         .font(.caption.weight(.semibold))
@@ -297,7 +320,7 @@ struct ChinaLightUpSection: View {
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
 
-                // Bottom Bar: 县 / 市 / 省 Switcher with comfortable spacing & touch targets
+                // Bottom Bar: 县 / 市 / 省 Switcher
                 HStack(alignment: .bottom, spacing: 10) {
                     HStack(spacing: 8) {
                         ForEach(ChinaRegionLevel.allCases) { item in
@@ -438,13 +461,13 @@ struct ChinaLightUpSection: View {
             UISelectionFeedbackGenerator().selectionChanged()
             withAnimation(.easeInOut(duration: 0.2)) {
                 selectedInfo = nil
+                renderRevision &+= 1
             }
         } else {
             UISelectionFeedbackGenerator().selectionChanged()
             let lit = chinaStore.isLit(tapped)
             updateSelectedInfo(for: tapped, isLit: lit)
         }
-        renderRevision &+= 1
     }
 
     private func updateSelectedInfo(for feature: ChinaGeoFeature, isLit: Bool) {
@@ -555,13 +578,147 @@ struct ChinaLightUpSection: View {
     }
 }
 
-// MARK: - Native GPU Vector MKMultiPolygon Overlays (Razor-Sharp at Every Zoom Level, Zero Tile Blur)
+// MARK: - Fast Tile-Culled MKOverlayRenderer (Zero Heat, Thin Crisp Lines at Every Zoom, 60fps)
 
-private final class ChinaMultiPolygonOverlay: MKMultiPolygon {
-    enum Role { case unlit, lit, highlight }
-    var role: Role = .lit
-    var level: ChinaRegionLevel = .city
-    var isDark: Bool = false
+private final class ChinaRegionsCanvasOverlay: NSObject, MKOverlay {
+    let coordinate = CLLocationCoordinate2D(latitude: 35.0, longitude: 105.0)
+    let boundingMapRect: MKMapRect = {
+        let nw = MKMapPoint(CLLocationCoordinate2D(latitude: 56.0, longitude: 70.0))
+        let se = MKMapPoint(CLLocationCoordinate2D(latitude: 14.0, longitude: 138.0))
+        return MKMapRect(x: min(nw.x, se.x), y: min(nw.y, se.y), width: abs(se.x - nw.x), height: abs(se.y - nw.y))
+    }()
+}
+
+private struct ChinaRenderSnapshot {
+    let features: [ChinaGeoFeature]
+    let litKeys: Set<String>
+    let highlightedID: String?
+    let level: ChinaRegionLevel
+    let isEditing: Bool
+    let isDark: Bool
+}
+
+private final class ChinaRegionsCanvasRenderer: MKOverlayRenderer {
+    private let lock = NSLock()
+    private var snapshot = ChinaRenderSnapshot(features: [], litKeys: [], highlightedID: nil, level: .city, isEditing: false, isDark: false)
+
+    private let lightLitFill = UIColor(red: 0.20, green: 0.54, blue: 0.96, alpha: 0.34).cgColor
+    private let lightLitStroke = UIColor(red: 0.06, green: 0.28, blue: 0.72, alpha: 0.92).cgColor
+    private let lightUnlitStroke = UIColor(red: 0.32, green: 0.38, blue: 0.46, alpha: 0.48).cgColor
+    private let lightHlStroke = UIColor(red: 0.04, green: 0.22, blue: 0.68, alpha: 1.0).cgColor
+    private let lightHlTint = UIColor(red: 0.12, green: 0.45, blue: 0.96, alpha: 0.15).cgColor
+
+    private let darkLitFill = UIColor(red: 0.32, green: 0.76, blue: 1.0, alpha: 0.44).cgColor
+    private let darkLitStroke = UIColor(red: 0.68, green: 0.92, blue: 1.0, alpha: 0.95).cgColor
+    private let darkUnlitStroke = UIColor(white: 0.86, alpha: 0.42).cgColor
+    private let darkHlStroke = UIColor.white.cgColor
+    private let darkHlTint = UIColor(red: 0.50, green: 0.86, blue: 1.0, alpha: 0.18).cgColor
+
+    func update(_ newSnapshot: ChinaRenderSnapshot) {
+        lock.lock()
+        snapshot = newSnapshot
+        lock.unlock()
+        setNeedsDisplay()
+    }
+
+    override func draw(_ mapRect: MKMapRect, zoomScale: MKZoomScale, in context: CGContext) {
+        lock.lock()
+        let snap = snapshot
+        lock.unlock()
+
+        guard !snap.features.isEmpty else { return }
+        let safeZoom = max(zoomScale, 0.000001)
+        let zoomFactor: CGFloat = zoomScale < 0.00005 ? 0.42 : (zoomScale < 0.00014 ? 0.62 : (zoomScale < 0.00035 ? 0.82 : 1.0))
+        let baseLit = snap.level == .district ? ChinaMapLayoutConfig.districtBorderScreenPoints : ChinaMapLayoutConfig.litBorderScreenPoints
+        let litLineWidth = (baseLit * zoomFactor) / safeZoom
+        let unlitLineWidth = (0.50 * zoomFactor) / safeZoom
+        let hlLineWidth = (ChinaMapLayoutConfig.highlightBorderScreenPoints * max(zoomFactor, 0.6)) / safeZoom
+
+        let pad = 6.0 / safeZoom
+        let queryRect = mapRect.insetBy(dx: -pad, dy: -pad)
+
+        context.saveGState()
+        context.setShouldAntialias(true)
+        context.setAllowsAntialiasing(true)
+        context.setLineJoin(.round)
+        context.setLineCap(.round)
+        context.setMiterLimit(2.0)
+
+        let useDetail = zoomScale >= 0.00025
+        var highlightedFeature: ChinaGeoFeature?
+
+        let litFill = snap.isDark ? darkLitFill : lightLitFill
+        let litStroke = snap.isDark ? darkLitStroke : lightLitStroke
+        let unlitStroke = snap.isDark ? darkUnlitStroke : lightUnlitStroke
+
+        if snap.isEditing {
+            let drawUnlitDistricts = snap.level != .district || zoomScale > 0.00055
+            if drawUnlitDistricts {
+                context.setStrokeColor(unlitStroke)
+                context.setLineWidth(unlitLineWidth)
+                for feat in snap.features where feat.mapRect.intersects(queryRect) {
+                    let isLit = snap.litKeys.contains(feat.visitedKey) || snap.litKeys.contains(feat.name)
+                    if isLit || feat.id == snap.highlightedID { continue }
+                    addRings(useDetail ? feat.mapRings : feat.coarseMapRings, to: context)
+                }
+                context.strokePath()
+            }
+        }
+
+        context.setFillColor(litFill)
+        context.setStrokeColor(litStroke)
+        context.setLineWidth(litLineWidth)
+        for feat in snap.features where feat.mapRect.intersects(queryRect) {
+            if feat.id == snap.highlightedID {
+                highlightedFeature = feat
+            }
+            let isLit = snap.litKeys.contains(feat.visitedKey) || snap.litKeys.contains(feat.name)
+            guard isLit else { continue }
+            addRings(useDetail ? feat.mapRings : feat.coarseMapRings, to: context)
+        }
+        context.drawPath(using: .fillStroke)
+
+        if let hl = highlightedFeature {
+            let rings = useDetail ? hl.mapRings : hl.coarseMapRings
+            context.setFillColor(snap.isDark ? darkHlTint : lightHlTint)
+            addRings(rings, to: context)
+            context.fillPath()
+
+            context.setStrokeColor(snap.isDark ? darkHlStroke : lightHlStroke)
+            context.setLineWidth(hlLineWidth)
+            addRings(rings, to: context)
+            context.strokePath()
+        }
+
+        context.restoreGState()
+    }
+
+    private func addRings(_ mapRings: [[MKMapPoint]], to context: CGContext) {
+        for ring in mapRings where ring.count >= 3 {
+            let first = point(for: ring[0])
+            context.move(to: first)
+            for i in 1..<ring.count {
+                context.addLine(to: point(for: ring[i]))
+            }
+            context.closePath()
+        }
+    }
+}
+
+// MARK: - Layout-Aware MKMapView (Prevents Cold-Start Bottom Blank Strip)
+
+private final class SafeChinaMapView: MKMapView {
+    var pendingInitialRegion: MKCoordinateRegion?
+    private var didApplyInitialLayoutRegion = false
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        if !didApplyInitialLayoutRegion, bounds.width > 10, bounds.height > 10, let reg = pendingInitialRegion {
+            didApplyInitialLayoutRegion = true
+            pendingInitialRegion = nil
+            setRegion(reg, animated: false)
+        }
+    }
 }
 
 // MARK: - MapView Wrapper
@@ -580,9 +737,9 @@ private struct ChinaRegionsMKMapView: UIViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> MKMapView {
-        let map = MKMapView()
-        let config = MKStandardMapConfiguration(elevationStyle: .realistic)
+    func makeUIView(context: Context) -> SafeChinaMapView {
+        let map = SafeChinaMapView()
+        let config = MKStandardMapConfiguration(elevationStyle: .flat)
         config.pointOfInterestFilter = .excludingAll
         map.preferredConfiguration = config
         map.showsCompass = false
@@ -597,175 +754,73 @@ private struct ChinaRegionsMKMapView: UIViewRepresentable {
         tap.cancelsTouchesInView = false
         map.addGestureRecognizer(tap)
 
+        map.addOverlay(context.coordinator.canvasOverlay, level: .aboveRoads)
+
+        // 等第一次 layoutSubviews 获得真实非零尺寸后再设置 region，避免冷启动底部出现未渲染空白格
         if let initial = fitRegion {
-            map.setRegion(initial, animated: false)
+            map.pendingInitialRegion = initial
             context.coordinator.hasFramedInitialRegion = true
         } else {
-            let fallback = MKCoordinateRegion(
+            map.pendingInitialRegion = MKCoordinateRegion(
                 center: ChinaMapLayoutConfig.fallbackCenter,
                 span: MKCoordinateSpan(
                     latitudeDelta: ChinaMapLayoutConfig.fallbackLatDelta,
                     longitudeDelta: ChinaMapLayoutConfig.fallbackLonDelta
                 )
             )
-            map.setRegion(fallback, animated: false)
         }
         return map
     }
 
-    func updateUIView(_ map: MKMapView, context: Context) {
+    func updateUIView(_ map: SafeChinaMapView, context: Context) {
         context.coordinator.parent = self
 
         if !context.coordinator.hasFramedInitialRegion, let target = fitRegion {
             context.coordinator.hasFramedInitialRegion = true
-            map.setRegion(target, animated: false)
+            if map.bounds.width > 10 && map.bounds.height > 10 {
+                map.setRegion(target, animated: false)
+            } else {
+                map.pendingInitialRegion = target
+            }
         }
 
-        let needsRebuild = context.coordinator.lastRevision != renderRevision
-            || context.coordinator.lastIsDark != isDark
-            || context.coordinator.lastLevel != level
-            || context.coordinator.lastEditing != isEditing
-            || context.coordinator.lastHighlightID != highlightedFeatureID
-            || context.coordinator.lastFeatureCount != features.count
-
-        guard needsRebuild else { return }
-        context.coordinator.lastRevision = renderRevision
-        context.coordinator.lastIsDark = isDark
-        context.coordinator.lastLevel = level
-        context.coordinator.lastEditing = isEditing
-        context.coordinator.lastHighlightID = highlightedFeatureID
-        context.coordinator.lastFeatureCount = features.count
-
-        context.coordinator.rebuildOverlays(on: map, features: features, litKeys: litKeys, highlightedID: highlightedFeatureID, level: level, isEditing: isEditing, isDark: isDark)
+        let snap = ChinaRenderSnapshot(
+            features: features,
+            litKeys: litKeys,
+            highlightedID: highlightedFeatureID,
+            level: level,
+            isEditing: isEditing,
+            isDark: isDark
+        )
+        context.coordinator.latestSnapshot = snap
+        if context.coordinator.lastRevision != renderRevision || context.coordinator.lastIsDark != isDark {
+            context.coordinator.lastRevision = renderRevision
+            context.coordinator.lastIsDark = isDark
+            context.coordinator.canvasRenderer?.update(snap)
+        }
     }
 
     final class Coordinator: NSObject, MKMapViewDelegate {
         var parent: ChinaRegionsMKMapView
+        let canvasOverlay = ChinaRegionsCanvasOverlay()
+        weak var canvasRenderer: ChinaRegionsCanvasRenderer?
+        var latestSnapshot = ChinaRenderSnapshot(features: [], litKeys: [], highlightedID: nil, level: .city, isEditing: false, isDark: false)
         var lastRevision = -1
         var lastIsDark = false
-        var lastLevel: ChinaRegionLevel?
-        var lastEditing = false
-        var lastHighlightID: String?
-        var lastFeatureCount = -1
         var hasFramedInitialRegion = false
-
-        // Light mode vector palette
-        private let lightLitFill = UIColor(red: 0.20, green: 0.54, blue: 0.96, alpha: 0.34)
-        private let lightLitStroke = UIColor(red: 0.06, green: 0.28, blue: 0.72, alpha: 0.92)
-        private let lightUnlitStroke = UIColor(red: 0.32, green: 0.38, blue: 0.46, alpha: 0.48)
-        private let lightHlStroke = UIColor(red: 0.04, green: 0.22, blue: 0.68, alpha: 1.0)
-        private let lightHlTint = UIColor(red: 0.12, green: 0.45, blue: 0.96, alpha: 0.16)
-
-        // Dark mode vector palette
-        private let darkLitFill = UIColor(red: 0.32, green: 0.76, blue: 1.0, alpha: 0.44)
-        private let darkLitStroke = UIColor(red: 0.68, green: 0.92, blue: 1.0, alpha: 0.95)
-        private let darkUnlitStroke = UIColor(white: 0.86, alpha: 0.42)
-        private let darkHlStroke = UIColor.white
-        private let darkHlTint = UIColor(red: 0.50, green: 0.86, blue: 1.0, alpha: 0.18)
-
-        private var activeOverlays: [MKOverlay] = []
 
         init(_ parent: ChinaRegionsMKMapView) {
             self.parent = parent
         }
 
-        func rebuildOverlays(
-            on map: MKMapView,
-            features: [ChinaGeoFeature],
-            litKeys: Set<String>,
-            highlightedID: String?,
-            level: ChinaRegionLevel,
-            isEditing: Bool,
-            isDark: Bool
-        ) {
-            if !activeOverlays.isEmpty {
-                map.removeOverlays(activeOverlays)
-                activeOverlays.removeAll()
-            }
-            guard !features.isEmpty else { return }
-
-            var unlitPolys: [MKPolygon] = []
-            var litPolys: [MKPolygon] = []
-            var hlPolys: [MKPolygon] = []
-
-            let includeUnlit = isEditing && level != .district
-
-            for feat in features {
-                let isLit = litKeys.contains(feat.visitedKey) || litKeys.contains(feat.name)
-                let isHl = feat.id == highlightedID
-
-                if isHl {
-                    for ring in feat.rings where ring.count >= 3 {
-                        var coords = ring
-                        hlPolys.append(MKPolygon(coordinates: &coords, count: coords.count))
-                    }
-                }
-                if isLit {
-                    for ring in feat.rings where ring.count >= 3 {
-                        var coords = ring
-                        litPolys.append(MKPolygon(coordinates: &coords, count: coords.count))
-                    }
-                } else if includeUnlit && !isHl {
-                    for ring in feat.rings where ring.count >= 3 {
-                        var coords = ring
-                        unlitPolys.append(MKPolygon(coordinates: &coords, count: coords.count))
-                    }
-                }
-            }
-
-            var toAdd: [MKOverlay] = []
-            if !unlitPolys.isEmpty {
-                let ov = ChinaMultiPolygonOverlay(unlitPolys)
-                ov.role = .unlit
-                ov.level = level
-                ov.isDark = isDark
-                toAdd.append(ov)
-            }
-            if !litPolys.isEmpty {
-                let ov = ChinaMultiPolygonOverlay(litPolys)
-                ov.role = .lit
-                ov.level = level
-                ov.isDark = isDark
-                toAdd.append(ov)
-            }
-            if !hlPolys.isEmpty {
-                let ov = ChinaMultiPolygonOverlay(hlPolys)
-                ov.role = .highlight
-                ov.level = level
-                ov.isDark = isDark
-                toAdd.append(ov)
-            }
-
-            activeOverlays = toAdd
-            if !toAdd.isEmpty {
-                map.addOverlays(toAdd, level: .aboveRoads)
-            }
-        }
-
         func mapView(_ mapView: MKMapView, rendererFor overlay: MKOverlay) -> MKOverlayRenderer {
-            guard let multi = overlay as? ChinaMultiPolygonOverlay else {
-                return MKOverlayRenderer(overlay: overlay)
+            if overlay is ChinaRegionsCanvasOverlay {
+                let r = ChinaRegionsCanvasRenderer(overlay: overlay)
+                r.update(latestSnapshot)
+                canvasRenderer = r
+                return r
             }
-            let r = MKMultiPolygonRenderer(multiPolygon: multi)
-            r.lineJoin = .round
-            r.lineCap = .round
-            switch multi.role {
-            case .unlit:
-                r.fillColor = .clear
-                r.strokeColor = multi.isDark ? darkUnlitStroke : lightUnlitStroke
-                r.lineWidth = 0.55
-            case .lit:
-                r.fillColor = multi.isDark ? darkLitFill : lightLitFill
-                r.strokeColor = multi.isDark ? darkLitStroke : lightLitStroke
-                r.lineWidth = multi.level == .district
-                    ? ChinaMapLayoutConfig.districtBorderLineWidth
-                    : ChinaMapLayoutConfig.litBorderLineWidth
-            case .highlight:
-                r.fillColor = multi.isDark ? darkHlTint : lightHlTint
-                r.strokeColor = multi.isDark ? darkHlStroke : lightHlStroke
-                r.lineWidth = ChinaMapLayoutConfig.highlightBorderLineWidth
-            }
-            return r
+            return MKOverlayRenderer(overlay: overlay)
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -779,162 +834,442 @@ private struct ChinaRegionsMKMapView: UIViewRepresentable {
     }
 }
 
-// MARK: - GitHub Sync & Searchable Region Editor Sheet
+// MARK: - 地区管理与可折叠 GitHub 同步面板（复刻原版四标签管理界面）
 
 struct ChinaGitHubSyncSheet: View {
     @EnvironmentObject private var chinaStore: ChinaRegionsStore
     @EnvironmentObject private var store: DataStore
     @Environment(\.dismiss) private var dismiss
 
-    let level: ChinaRegionLevel
-    let features: [ChinaGeoFeature]
-
+    @State private var selectedTab: ChinaRegionsStore.ManageTab
     @State private var searchText = ""
+    @State private var newItemText = ""
+    @State private var showSyncConfig = false
+    @State private var candidatePool: [ChinaGeoFeature] = []
 
-    private var filteredFeatures: [ChinaGeoFeature] {
+    init(initialLevel: ChinaRegionLevel = .city) {
+        switch initialLevel {
+        case .district: _selectedTab = State(initialValue: .district)
+        case .city: _selectedTab = State(initialValue: .city)
+        case .province: _selectedTab = State(initialValue: .province)
+        }
+    }
+
+    private var allItemsInTab: [String] {
+        chinaStore.items(for: selectedTab)
+    }
+
+    private var filteredItems: [String] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty else { return Array(features.prefix(60)) }
-        return Array(features.filter { $0.name.localizedCaseInsensitiveContains(q) }.prefix(80))
+        guard !q.isEmpty else { return allItemsInTab }
+        return allItemsInTab.filter { displayName(for: $0).localizedCaseInsensitiveContains(q) || $0.localizedCaseInsensitiveContains(q) }
+    }
+
+    private var addSuggestions: [ChinaGeoFeature] {
+        let q = newItemText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty else { return [] }
+        return Array(candidatePool.filter { feat in
+            let matchesName = feat.name.localizedCaseInsensitiveContains(q)
+            if !matchesName { return false }
+            if selectedTab == .municipality {
+                return ChinaRegionsStore.municipalityNames.contains(feat.name)
+            } else if selectedTab == .province || selectedTab == .city {
+                return !ChinaRegionsStore.municipalityNames.contains(feat.name)
+            }
+            return true
+        }.prefix(8))
+    }
+
+    private func displayName(for rawKey: String) -> String {
+        if let bar = rawKey.firstIndex(of: "|") {
+            return String(rawKey[..<bar])
+        }
+        return rawKey
     }
 
     var body: some View {
-        NavigationStack {
-            Form {
-                Section {
-                    HStack {
-                        Text("已点亮统计")
-                        Spacer()
-                        Text("\(chinaStore.litProvinceCount) 省 · \(chinaStore.litCityCount) 市 · \(chinaStore.litDistrictCount) 区县")
-                            .font(.subheadline.monospacedDigit())
-                            .foregroundColor(.secondary)
+        VStack(spacing: 0) {
+            // 1. 顶部标题栏：📍 地区管理 + ⚙️ 折叠同步配置 + × 关闭
+            HStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    Text("📍")
+                        .font(.title3)
+                    Text("地区管理")
+                        .font(.title3.bold())
+                }
+
+                Spacer()
+
+                Button {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showSyncConfig.toggle()
                     }
+                } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "gearshape.fill")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundColor(showSyncConfig ? .white : .primary)
+                            .frame(width: 36, height: 36)
+                            .background(
+                                showSyncConfig ? Color.blue : Color(.tertiarySystemFill),
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            )
+                        if chinaStore.hasUnsyncedChanges && !showSyncConfig {
+                            Circle()
+                                .fill(Color.orange)
+                                .frame(width: 8, height: 8)
+                                .offset(x: 2, y: -2)
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundColor(.primary)
+                        .frame(width: 36, height: 36)
+                        .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+            .padding(.bottom, 12)
+
+            // 2. 可折叠的 GitHub 同步与足迹匹配配置（默认收起，避免误触拉取和推送）
+            if showSyncConfig {
+                collapsibleSyncPanel
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            // 3. 四大下划线标签栏：区县 / 城市 / 省份 / 直辖市
+            HStack(spacing: 0) {
+                ForEach(ChinaRegionsStore.ManageTab.allCases) { tab in
+                    let active = selectedTab == tab
+                    Button {
+                        guard selectedTab != tab else { return }
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        selectedTab = tab
+                        searchText = ""
+                        newItemText = ""
+                    } label: {
+                        VStack(spacing: 8) {
+                            Text(tab.title)
+                                .font(.subheadline.weight(active ? .semibold : .regular))
+                                .foregroundColor(active ? .primary : .secondary)
+                            Rectangle()
+                                .fill(active ? Color.blue : Color.clear)
+                                .frame(height: 2.5)
+                        }
+                        .frame(maxWidth: .infinity)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                Divider()
+            }
+
+            // 4. 搜索栏 + 当前数量角标
+            HStack(spacing: 10) {
+                TextField("搜索...", text: $searchText)
+                    .font(.subheadline)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 0.8)
+                    )
+
+                Text("\(filteredItems.count)")
+                    .font(.subheadline.weight(.semibold).monospacedDigit())
+                    .foregroundColor(.blue)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.blue.opacity(0.12), in: Capsule())
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+
+            // 5. 已点亮地区卡片列表（右侧红色 × 快速删除）
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    if filteredItems.isEmpty {
+                        Text(searchText.isEmpty ? "暂无已点亮的\(selectedTab.title)" : "没有找到匹配的\(selectedTab.title)")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 40)
+                    } else {
+                        ForEach(filteredItems, id: \.self) { rawKey in
+                            HStack(spacing: 12) {
+                                Text(displayName(for: rawKey))
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Button {
+                                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    withAnimation(.easeInOut(duration: 0.18)) {
+                                        chinaStore.removeItem(rawKey, from: selectedTab)
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.caption.weight(.bold))
+                                        .foregroundColor(.red)
+                                        .frame(width: 34, height: 30)
+                                        .background(Color.red.opacity(0.11), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.leading, 16)
+                            .padding(.trailing, 10)
+                            .padding(.vertical, 10)
+                            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        }
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+            }
+
+            // 6. 底部添加栏（支持候选补全 + 手动添加）与同步状态条
+            VStack(spacing: 10) {
+                if !addSuggestions.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(addSuggestions) { feat in
+                                Button {
+                                    addFeature(feat)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "plus")
+                                            .font(.caption2.weight(.bold))
+                                        Text(feat.name)
+                                            .font(.caption.weight(.medium))
+                                    }
+                                    .foregroundColor(.blue)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(Color.blue.opacity(0.12), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    TextField(selectedTab.placeholder, text: $newItemText)
+                        .font(.subheadline)
+                        .submitLabel(.done)
+                        .onSubmit { addManualInput() }
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 11)
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                .stroke(Color.primary.opacity(0.08), lineWidth: 0.8)
+                        )
 
                     Button {
-                        Task {
-                            let added = await chinaStore.autoMatch(stays: store.stays, includeDistricts: true)
-                            chinaStore.syncMessage = "从当前足迹新增：\(added.provinces) 省 · \(added.cities) 市 · \(added.districts) 区县"
-                        }
+                        addManualInput()
                     } label: {
-                        HStack {
-                            Label("从漫迹足迹自动匹配点亮", systemImage: "sparkles")
-                            Spacer()
-                            if chinaStore.isAutoMatching { ProgressView() }
-                        }
-                    }
-                    .disabled(chinaStore.isAutoMatching)
-                } header: {
-                    Text("足迹同步")
-                }
-
-                Section {
-                    TextField("仓库（格式：用户名/仓库名）", text: $chinaStore.ghRepo)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    TextField("分支（默认 main）", text: $chinaStore.ghBranch)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("GitHub Personal Access Token", text: $chinaStore.ghToken)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-
-                    HStack(spacing: 12) {
-                        Button {
-                            Task { await chinaStore.pullFromGitHub() }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.down.circle.fill")
-                                Text("从 GitHub 拉取")
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.82)
-                            }
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(.blue)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
-                            .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(chinaStore.isSyncing || !chinaStore.isGitHubConfigured)
-                        .opacity((chinaStore.isSyncing || !chinaStore.isGitHubConfigured) ? 0.45 : 1)
-
-                        Button {
-                            Task { await chinaStore.pushToGitHub() }
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.up.circle.fill")
-                                Text("推送到 GitHub")
-                                    .lineLimit(1)
-                                    .minimumScaleFactor(0.82)
-                            }
-                            .font(.subheadline.weight(.semibold))
+                        Image(systemName: "plus")
+                            .font(.title3.weight(.semibold))
                             .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
+                            .frame(width: 44, height: 42)
                             .background(Color.blue, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(chinaStore.isSyncing || !chinaStore.isGitHubConfigured)
-                        .opacity((chinaStore.isSyncing || !chinaStore.isGitHubConfigured) ? 0.45 : 1)
                     }
-                    .padding(.vertical, 4)
-
-                    if chinaStore.isSyncing {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("正在与 GitHub 通信…")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    if let msg = chinaStore.syncMessage {
-                        Text(msg)
-                            .font(.caption)
-                            .foregroundColor(.green)
-                    }
-                    if let err = chinaStore.syncError {
-                        Text(err)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
-                } header: {
-                    Text("GitHub 仓库双向同步（visited_areas.json）")
-                } footer: {
-                    Text("与原 MyTravelsChina 网页版使用完全一致的 visited_areas.json 格式，支持无缝拉取与回写。")
+                    .buttonStyle(.plain)
+                    .disabled(newItemText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .opacity(newItemText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? 0.5 : 1)
                 }
+                .padding(.horizontal, 16)
 
-                Section {
-                    TextField("搜索\(level.fullTitle)名称以手动切换…", text: $searchText)
-                    ForEach(filteredFeatures) { feat in
-                        let lit = chinaStore.isLit(feat)
-                        Button {
-                            _ = chinaStore.toggle(feat)
-                            UISelectionFeedbackGenerator().selectionChanged()
-                        } label: {
-                            HStack {
-                                Text(feat.name)
-                                    .foregroundColor(.primary)
-                                if level == .district {
-                                    Text("\(feat.adcode)")
-                                        .font(.caption.monospacedDigit())
-                                        .foregroundColor(.secondary)
-                                }
-                                Spacer()
-                                Image(systemName: lit ? "checkmark.circle.fill" : "circle")
-                                    .foregroundColor(lit ? .blue : Color(.tertiaryLabel))
-                            }
-                        }
+                // 底部状态按钮：只展开配置，防止误触直接推送
+                Button {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showSyncConfig = true
                     }
-                } header: {
-                    Text("快速检索并点亮（当前层级：\(level.fullTitle)）")
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: chinaStore.hasUnsyncedChanges ? "arrow.triangle.2.circlepath" : "checkmark")
+                            .font(.subheadline.weight(.semibold))
+                        Text(chinaStore.hasUnsyncedChanges ? "有本地改动 · 点此展开 GitHub 同步" : "已是最新")
+                            .font(.subheadline.weight(.semibold))
+                    }
+                    .foregroundColor(chinaStore.hasUnsyncedChanges ? .white : .white.opacity(0.95))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(
+                        chinaStore.hasUnsyncedChanges ? Color.blue : Color(.systemGray3),
+                        in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
+            }
+            .padding(.top, 8)
+            .background(Color(.systemGroupedBackground))
+        }
+        .background(Color(.systemGroupedBackground).ignoresSafeArea())
+        .task(id: selectedTab) {
+            let tab = selectedTab
+            let loaded = await Task.detached(priority: .utility) { () -> [ChinaGeoFeature] in
+                switch tab {
+                case .district: return ChinaGeoLoader.loadDistricts()
+                case .city: return ChinaGeoLoader.loadCities()
+                case .province, .municipality: return ChinaGeoLoader.loadProvinces()
+                }
+            }.value
+            candidatePool = loaded
+        }
+    }
+
+    private var collapsibleSyncPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("GitHub 同步与足迹匹配", systemImage: "icloud.and.arrow.up")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button("收起") {
+                    withAnimation(.easeInOut(duration: 0.2)) { showSyncConfig = false }
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundColor(.blue)
+            }
+
+            Button {
+                Task {
+                    let added = await chinaStore.autoMatch(stays: store.stays, includeDistricts: true)
+                    chinaStore.syncMessage = "从足迹新增：\(added.provinces) 省 · \(added.cities) 市 · \(added.districts) 区县"
+                }
+            } label: {
+                HStack {
+                    Label("从漫迹足迹自动匹配点亮", systemImage: "sparkles")
+                        .font(.subheadline.weight(.medium))
+                    Spacer()
+                    if chinaStore.isAutoMatching { ProgressView().scaleEffect(0.85) }
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(chinaStore.isAutoMatching)
+
+            VStack(spacing: 8) {
+                TextField("仓库（用户名/仓库名）", text: $chinaStore.ghRepo)
+                    .font(.subheadline)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                TextField("分支（默认 main）", text: $chinaStore.ghBranch)
+                    .font(.subheadline)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+
+                SecureField("GitHub Personal Access Token", text: $chinaStore.ghToken)
+                    .font(.subheadline)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            }
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await chinaStore.pullFromGitHub() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.down.circle.fill")
+                        Text("从 GitHub 拉取")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.blue)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(chinaStore.isSyncing || !chinaStore.isGitHubConfigured)
+                .opacity((chinaStore.isSyncing || !chinaStore.isGitHubConfigured) ? 0.45 : 1)
+
+                Button {
+                    Task { await chinaStore.pushToGitHub() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.circle.fill")
+                        Text("推送到 GitHub")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 11)
+                    .background(Color.blue, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                }
+                .buttonStyle(.plain)
+                .disabled(chinaStore.isSyncing || !chinaStore.isGitHubConfigured)
+                .opacity((chinaStore.isSyncing || !chinaStore.isGitHubConfigured) ? 0.45 : 1)
+            }
+
+            if chinaStore.isSyncing {
+                HStack(spacing: 6) {
+                    ProgressView().scaleEffect(0.8)
+                    Text("正在与 GitHub 通信…").font(.caption).foregroundColor(.secondary)
                 }
             }
-            .navigationTitle("省市县同步与管理")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
-                }
+            if let msg = chinaStore.syncMessage {
+                Text(msg).font(.caption).foregroundColor(.green)
+            }
+            if let err = chinaStore.syncError {
+                Text(err).font(.caption).foregroundColor(.red)
             }
         }
+        .padding(14)
+        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+
+    private func addFeature(_ feat: ChinaGeoFeature) {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        let key = selectedTab == .district ? feat.visitedKey : feat.name
+        chinaStore.addItem(key, to: selectedTab)
+        newItemText = ""
+    }
+
+    private func addManualInput() {
+        let trimmed = newItemText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        if selectedTab == .district,
+           let matched = candidatePool.first(where: { $0.name == trimmed }) {
+            chinaStore.addItem(matched.visitedKey, to: .district)
+        } else {
+            chinaStore.addItem(trimmed, to: selectedTab)
+        }
+        newItemText = ""
     }
 }

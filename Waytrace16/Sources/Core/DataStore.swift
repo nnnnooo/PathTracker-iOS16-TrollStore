@@ -133,22 +133,58 @@ final class DataStore: ObservableObject {
     func restoreBackup(from sourceURL: URL) -> Bool {
         let accessed = sourceURL.startAccessingSecurityScopedResource()
         defer { if accessed { sourceURL.stopAccessingSecurityScopedResource() } }
+
+        let fm = FileManager.default
+        let tempURL = fm.temporaryDirectory.appendingPathComponent("waytrace16-restore-\(UUID().uuidString).sqlite")
+        let backupOldURL = fm.temporaryDirectory.appendingPathComponent("waytrace16-old-\(UUID().uuidString).sqlite")
+        defer {
+            try? fm.removeItem(at: tempURL)
+            try? fm.removeItem(at: backupOldURL)
+        }
+
+        // 1. 先拷贝到临时路径并验证 SQLite 可正常打开且包含主表
+        do {
+            try fm.copyItem(at: sourceURL, to: tempURL)
+        } catch {
+            return false
+        }
+        var testDB: OpaquePointer?
+        let openOK = sqlite3_open_v2(tempURL.path, &testDB, SQLITE_OPEN_READONLY, nil) == SQLITE_OK
+        var hasSchema = false
+        if openOK, let testDB {
+            var stmt: OpaquePointer?
+            if sqlite3_prepare_v2(testDB, "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('stays','track_chunks','trips');", -1, &stmt, nil) == SQLITE_OK {
+                hasSchema = (sqlite3_step(stmt) == SQLITE_ROW)
+            }
+            sqlite3_finalize(stmt)
+        }
+        if let testDB { sqlite3_close(testDB) }
+        guard openOK && hasSchema else { return false }
+
+        // 2. 备份当前数据库后再替换，失败则自动回滚
+        execute("PRAGMA wal_checkpoint(TRUNCATE);")
         if let db {
             sqlite3_close(db)
             self.db = nil
         }
         let walURL = URL(fileURLWithPath: dbURL.path + "-wal")
         let shmURL = URL(fileURLWithPath: dbURL.path + "-shm")
-        try? FileManager.default.removeItem(at: walURL)
-        try? FileManager.default.removeItem(at: shmURL)
+        try? fm.copyItem(at: dbURL, to: backupOldURL)
+
         do {
-            try? FileManager.default.removeItem(at: dbURL)
-            try FileManager.default.copyItem(at: sourceURL, to: dbURL)
+            try? fm.removeItem(at: walURL)
+            try? fm.removeItem(at: shmURL)
+            try? fm.removeItem(at: dbURL)
+            try fm.copyItem(at: tempURL, to: dbURL)
             openDatabase()
             createTables()
             reloadAll()
             return true
         } catch {
+            if fm.fileExists(atPath: backupOldURL.path) {
+                try? fm.removeItem(at: dbURL)
+                try? fm.copyItem(at: backupOldURL, to: dbURL)
+            }
             openDatabase()
             createTables()
             reloadAll()

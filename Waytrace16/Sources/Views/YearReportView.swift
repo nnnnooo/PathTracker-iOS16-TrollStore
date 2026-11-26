@@ -349,10 +349,27 @@ struct YearReportView: View {
         }()
 
         var favPhotos: [PHAsset] = []
-        if let favCoord = report.favoritePlace?.coordinate {
-            let favLoc = CLLocation(latitude: favCoord.latitude, longitude: favCoord.longitude)
-            let near = allAssets.filter { ($0.location?.distance(from: favLoc) ?? .infinity) < 550 }
-            favPhotos = Array(near.prefix(12))
+        if let fav = report.favoritePlace {
+            let favLoc = CLLocation(latitude: fav.coordinate.latitude, longitude: fav.coordinate.longitude)
+            // 先查 1.2km 内，若为城市级均值中心点再逐步放宽到 15km 或当日相册兜底
+            var near = allAssets.filter { ($0.location?.distance(from: favLoc) ?? .infinity) < 1_200 }
+            if near.isEmpty {
+                near = allAssets.filter { ($0.location?.distance(from: favLoc) ?? .infinity) < 15_000 }
+            }
+            if near.isEmpty {
+                let cal = Calendar.current
+                let favDays = Set(yearStays.filter { $0.displayName == fav.name }.map { cal.startOfDay(for: $0.arrival) })
+                near = allAssets.filter { asset in
+                    guard let d = asset.creationDate else { return false }
+                    return favDays.contains(cal.startOfDay(for: d))
+                }
+            }
+            if near.count > 12 {
+                let step = max(1, near.count / 12)
+                favPhotos = stride(from: 0, to: near.count, by: step).prefix(12).map { near[$0] }
+            } else {
+                favPhotos = near
+            }
         }
 
         guard data?.report.year == targetYear else { return }
@@ -1328,11 +1345,88 @@ private struct YearPassportPage: View {
 
 // MARK: - Page 5: Longest Day (Screenshot 6)
 
+private struct LongestDayRouteShape: Shape {
+    let lines: [[CGPoint]]
+
+    func path(in rect: CGRect) -> Path {
+        Path { p in
+            for line in lines where line.count > 1 {
+                p.addLines(line.map { CGPoint(x: $0.x * rect.width, y: $0.y * rect.height) })
+            }
+        }
+    }
+}
+
+private struct LongestDayAnimatedHead: View, Animatable {
+    let lines: [[CGPoint]]
+    let size: CGSize
+    var progress: CGFloat
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    var body: some View {
+        let pt = pointAlongRoute(progress: progress)
+        ZStack {
+            Circle()
+                .fill(Color(red: 0.78, green: 0.58, blue: 1.0).opacity(0.45))
+                .frame(width: 24, height: 24)
+                .blur(radius: 4)
+            Circle()
+                .fill(.white)
+                .frame(width: 11, height: 11)
+                .overlay(Circle().stroke(Color(red: 0.75, green: 0.55, blue: 1.0), lineWidth: 2.5))
+        }
+        .position(pt)
+        .opacity(progress > 0.001 ? 1 : 0)
+    }
+
+    private func pointAlongRoute(progress: CGFloat) -> CGPoint {
+        let clamped = min(max(progress, 0), 1)
+        var segments: [(CGPoint, CGPoint, CGFloat)] = []
+        var totalLen: CGFloat = 0
+        for line in lines where line.count > 1 {
+            for i in 0..<(line.count - 1) {
+                let a = CGPoint(x: line[i].x * size.width, y: line[i].y * size.height)
+                let b = CGPoint(x: line[i + 1].x * size.width, y: line[i + 1].y * size.height)
+                let len = hypot(b.x - a.x, b.y - a.y)
+                if len > 0.001 {
+                    segments.append((a, b, len))
+                    totalLen += len
+                }
+            }
+        }
+        guard totalLen > 0, let first = segments.first else {
+            return CGPoint(x: size.width / 2, y: size.height / 2)
+        }
+        var target = clamped * totalLen
+        for (a, b, len) in segments {
+            if target <= len {
+                let t = target / len
+                return CGPoint(x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t)
+            }
+            target -= len
+        }
+        return segments.last?.1 ?? first.0
+    }
+}
+
 private struct YearLongestDayPage: View {
     let report: YearReportSummary
     let backdrop: YearMapBackdrop?
     let isActive: Bool
     @State private var drawn: CGFloat = 0
+
+    private func playRouteAnimation() {
+        drawn = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            withAnimation(.easeInOut(duration: 2.6)) {
+                drawn = 1
+            }
+        }
+    }
 
     var body: some View {
         ZStack {
@@ -1342,34 +1436,68 @@ private struct YearLongestDayPage: View {
             if let backdrop {
                 StoryBackdropImage(image: backdrop.image, isActive: isActive)
                 GeometryReader { geo in
-                    let path = Path { p in
-                        for line in backdrop.lines where line.count > 1 {
-                            p.addLines(line.map { CGPoint(x: $0.x * geo.size.width, y: $0.y * geo.size.height) })
-                        }
-                    }
-                    let trimmed = path.trimmedPath(from: 0, to: drawn)
-                    trimmed.stroke(
-                        Color(red: 0.75, green: 0.55, blue: 1),
-                        style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
-                    )
-                    .blur(radius: 8)
-                    trimmed.stroke(.white, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+                    let shape = LongestDayRouteShape(lines: backdrop.lines)
 
+                    // 淡淡的底轨预览
+                    shape
+                        .stroke(Color.white.opacity(0.16), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+
+                    // 动态延展的紫色光晕 + 白色主路径（使用 Animatable Shape.trim 真正逐帧动画）
+                    shape
+                        .trim(from: 0, to: drawn)
+                        .stroke(
+                            Color(red: 0.75, green: 0.55, blue: 1),
+                            style: StrokeStyle(lineWidth: 10, lineCap: .round, lineJoin: .round)
+                        )
+                        .blur(radius: 8)
+
+                    shape
+                        .trim(from: 0, to: drawn)
+                        .stroke(.white, style: StrokeStyle(lineWidth: 3.5, lineCap: .round, lineJoin: .round))
+
+                    // 起点固定圆点
                     if let first = backdrop.lines.first?.first {
                         Circle()
                             .fill(.white)
-                            .frame(width: 12, height: 12)
-                            .overlay(Circle().stroke(Color(red: 0.75, green: 0.55, blue: 1), lineWidth: 3))
+                            .frame(width: 10, height: 10)
+                            .overlay(Circle().stroke(Color(red: 0.75, green: 0.55, blue: 1), lineWidth: 2.5))
                             .position(x: first.x * geo.size.width, y: first.y * geo.size.height)
-                            .opacity(drawn > 0 ? 1 : 0)
+                            .opacity(drawn > 0.01 ? 1 : 0)
                     }
+
+                    // 沿轨迹平滑移动的发光头部圆点
+                    LongestDayAnimatedHead(lines: backdrop.lines, size: geo.size, progress: drawn)
                 }
                 .ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                    playRouteAnimation()
+                }
             }
 
             StoryPageText {
-                StoryKicker(text: "移动最远的一天", tint: Color(red: 0.8, green: 0.65, blue: 1))
-                    .storyReveal(isActive, after: 0.2)
+                HStack(alignment: .center) {
+                    StoryKicker(text: "移动最远的一天", tint: Color(red: 0.8, green: 0.65, blue: 1))
+                        .storyReveal(isActive, after: 0.2)
+                    Spacer()
+                    if backdrop != nil {
+                        Button {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            playRouteAnimation()
+                        } label: {
+                            Label("重播路线", systemImage: "play.circle.fill")
+                                .font(.caption.weight(.semibold))
+                                .foregroundColor(.white.opacity(0.9))
+                                .padding(.horizontal, 11)
+                                .padding(.vertical, 6)
+                                .background(.ultraThinMaterial, in: Capsule())
+                                .overlay(Capsule().stroke(Color.white.opacity(0.18), lineWidth: 0.7))
+                        }
+                        .buttonStyle(.plain)
+                        .storyReveal(isActive, after: 0.6)
+                    }
+                }
                 if let longest = report.longestDay {
                     Text(zhMonthDayWeekday(longest.date))
                         .font(.title2.weight(.bold))
@@ -1389,15 +1517,13 @@ private struct YearLongestDayPage: View {
             }
         }
         .onAppear {
-            if isActive {
-                drawn = 0
-                withAnimation(.easeInOut(duration: 2.2).delay(0.4)) { drawn = 1 }
-            }
+            if isActive { playRouteAnimation() }
         }
         .onChange(of: isActive) { active in
-            drawn = 0
             if active {
-                withAnimation(.easeInOut(duration: 2.2).delay(0.4)) { drawn = 1 }
+                playRouteAnimation()
+            } else {
+                drawn = 0
             }
         }
     }
@@ -1833,13 +1959,25 @@ private struct YearPoster: View {
 // MARK: - PHAsset Image Loader & Share Sheet
 
 private enum YearAssetLoader {
+    private final class OnceFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var done = false
+        func claim() -> Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            if done { return false }
+            done = true
+            return true
+        }
+    }
+
     static func image(for asset: PHAsset, targetSize: CGSize) async -> UIImage? {
         await withCheckedContinuation { cont in
             let req = PHImageRequestOptions()
             req.deliveryMode = .highQualityFormat
             req.resizeMode = .fast
             req.isNetworkAccessAllowed = true
-            var resumed = false
+            let flag = OnceFlag()
             PHImageManager.default().requestImage(
                 for: asset,
                 targetSize: targetSize,
@@ -1847,8 +1985,9 @@ private enum YearAssetLoader {
                 options: req
             ) { img, info in
                 let isDegraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                if !isDegraded && !resumed {
-                    resumed = true
+                let cancelled = (info?[PHImageCancelledKey] as? Bool) ?? false
+                let hasError = info?[PHImageErrorKey] != nil
+                if (!isDegraded || cancelled || hasError), flag.claim() {
                     cont.resume(returning: img)
                 }
             }

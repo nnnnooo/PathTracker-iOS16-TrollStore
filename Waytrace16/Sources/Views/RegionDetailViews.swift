@@ -134,9 +134,9 @@ struct CityStint: Identifiable, Hashable, Sendable {
             ))
         }
 
-        return buckets.map { b in
+        return buckets.enumerated().map { idx, b in
             CityStint(
-                id: "\(b.city)-\(Int(b.start.timeIntervalSince1970))-\(b.count)",
+                id: "\(idx)-\(b.city)-\(Int(b.start.timeIntervalSince1970))-\(b.count)",
                 city: b.city,
                 start: b.start,
                 end: b.end,
@@ -162,6 +162,7 @@ struct CityGlowSpot: Identifiable, Sendable {
 private struct CountryDetailPayload: Sendable {
     let totalDays: Int
     let citySpots: [CityGlowSpot]
+    let daysByCity: [String: Int]
     let firstDate: Date?
     let lastDate: Date?
     let borderStamps: [PassportStamp]
@@ -201,7 +202,7 @@ struct CountryDetailView: View {
         Group {
             if let data = payload {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 18) {
                         CityGlowMKMapView(
                             spots: data.citySpots,
                             countryCode: countryCode
@@ -336,6 +337,7 @@ struct CountryDetailView: View {
                 return CountryDetailPayload(
                     totalDays: totalDays,
                     citySpots: spots,
+                    daysByCity: daysByCity,
                     firstDate: mine.map(\.arrival).min(),
                     lastDate: mine.map { $0.departure ?? $0.arrival }.max(),
                     borderStamps: borderStamps,
@@ -351,7 +353,7 @@ struct CountryDetailView: View {
 
     @ViewBuilder
     private func cityStampsSection(data: CountryDetailPayload) -> some View {
-        let daysByCity = Dictionary(uniqueKeysWithValues: data.citySpots.map { ($0.name, $0.days) })
+        let daysByCity = data.daysByCity
         let displayed = Array(data.cityStamps.prefix(visibleCityStampCount))
         let rows = stride(from: 0, to: displayed.count, by: 3).map { idx in
             Array(displayed[idx..<min(idx + 3, displayed.count)])
@@ -462,7 +464,7 @@ struct ProvinceDetailView: View {
         Group {
             if let data = payload {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 18) {
                         CityGlowMKMapView(spots: data.citySpots, countryCode: nil)
                             .frame(height: 300)
                             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -579,7 +581,7 @@ struct CityAllVisitsView: View {
         Group {
             if loaded {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    VStack(alignment: .leading, spacing: 18) {
                         DayRouteMapView(chunks: [], pendingPoints: [], stays: Array(resolvedStays.prefix(150)), currentLocation: nil)
                             .frame(height: 260)
                             .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
@@ -647,6 +649,8 @@ struct CityAllVisitsView: View {
 
 struct StintsByYearSection: View {
     let stints: [CityStint]
+    private let stintsByYear: [Int: [CityStint]]
+    private let years: [(year: Int, count: Int)]
 
     @State private var selectedYear: Int
     @State private var selectedMonth: Int? = nil
@@ -654,61 +658,44 @@ struct StintsByYearSection: View {
 
     init(stints: [CityStint]) {
         self.stints = stints
-        let firstYear = stints.map { Calendar.current.component(.year, from: $0.start) }.max()
-            ?? Calendar.current.component(.year, from: Date())
-        _selectedYear = State(initialValue: firstYear)
-    }
-
-    private var years: [(year: Int, count: Int)] {
         let cal = Calendar.current
         let grouped = Dictionary(grouping: stints) { cal.component(.year, from: $0.start) }
-        return grouped.map { ($0.key, $0.value.count) }.sorted { $0.year > $1.year }
-    }
-
-    private var activeYear: Int {
-        if years.contains(where: { $0.year == selectedYear }) { return selectedYear }
-        return years.first?.year ?? Calendar.current.component(.year, from: Date())
-    }
-
-    private var yearStints: [CityStint] {
-        let cal = Calendar.current
-        return stints.filter { cal.component(.year, from: $0.start) == activeYear }
-    }
-
-    private var daysPerMonth: [Int: Int] {
-        let cal = Calendar.current
-        var map: [Int: Int] = [:]
-        for stint in yearStints {
-            let m = cal.component(.month, from: stint.start)
-            map[m, default: 0] += stint.days
-        }
-        return map
-    }
-
-    private var filteredYearStints: [CityStint] {
-        let cal = Calendar.current
-        let base = selectedMonth == nil
-            ? yearStints
-            : yearStints.filter { cal.component(.month, from: $0.start) == selectedMonth }
-        return base.sorted { $0.start > $1.start }
-    }
-
-    private var monthlyGroups: [(month: Int, stints: [CityStint], totalDays: Int)] {
-        let cal = Calendar.current
-        let visible = Array(filteredYearStints.prefix(visibleLimit))
-        let grouped = Dictionary(grouping: visible) { cal.component(.month, from: $0.start) }
-        return grouped.map { m, list in
-            let sorted = list.sorted { $0.start > $1.start }
-            let days = sorted.reduce(0) { $0 + $1.days }
-            return (m, sorted, days)
-        }
-        .sorted { $0.month > $1.month }
+            .mapValues { $0.sorted { $0.start > $1.start } }
+        let sortedYears: [(year: Int, count: Int)] = grouped
+            .map { (year: $0.key, count: $0.value.count) }
+            .sorted { $0.year > $1.year }
+        self.stintsByYear = grouped
+        self.years = sortedYears
+        let firstYear = sortedYears.first?.year ?? cal.component(.year, from: Date())
+        _selectedYear = State(initialValue: firstYear)
     }
 
     private static let zhMonths = ["", "一月", "二月", "三月", "四月", "五月", "六月", "七月", "八月", "九月", "十月", "十一月", "十二月"]
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 14) {
+        let cal = Calendar.current
+        let activeYear = stintsByYear[selectedYear] != nil
+            ? selectedYear
+            : (years.first?.year ?? cal.component(.year, from: Date()))
+        let currentYearStints = stintsByYear[activeYear] ?? []
+        var monthDays: [Int: Int] = [:]
+        for stint in currentYearStints {
+            let m = cal.component(.month, from: stint.start)
+            monthDays[m, default: 0] += stint.days
+        }
+        let filteredStints: [CityStint] = selectedMonth == nil
+            ? currentYearStints
+            : currentYearStints.filter { cal.component(.month, from: $0.start) == selectedMonth }
+        let visibleStints = Array(filteredStints.prefix(visibleLimit))
+        let groupedByMonth = Dictionary(grouping: visibleStints) { cal.component(.month, from: $0.start) }
+        let monthlyGroups: [(month: Int, stints: [CityStint], totalDays: Int)] = groupedByMonth.map { m, list in
+            let days = list.reduce(0) { $0 + $1.days }
+            return (m, list, days)
+        }
+        .sorted { $0.month > $1.month }
+        let remaining = max(0, filteredStints.count - visibleLimit)
+
+        return VStack(alignment: .leading, spacing: 14) {
             SectionHeader(title: "每一次到访", trailing: "\(stints.count) 次")
 
             if !years.isEmpty {
@@ -745,7 +732,7 @@ struct StintsByYearSection: View {
                 }
             }
 
-            monthBarStrip
+            monthBarStrip(daysPerMonth: monthDays)
 
             ForEach(monthlyGroups, id: \.month) { group in
                 VStack(alignment: .leading, spacing: 8) {
@@ -781,7 +768,6 @@ struct StintsByYearSection: View {
                 }
             }
 
-            let remaining = max(0, filteredYearStints.count - visibleLimit)
             if remaining > 0 {
                 Button {
                     UISelectionFeedbackGenerator().selectionChanged()
@@ -804,13 +790,13 @@ struct StintsByYearSection: View {
             }
         }
         .onChange(of: stints.count) { _ in
-            if !years.contains(where: { $0.year == selectedYear }), let first = years.first?.year {
+            if stintsByYear[selectedYear] == nil, let first = years.first?.year {
                 selectedYear = first
             }
         }
     }
 
-    private var monthBarStrip: some View {
+    private func monthBarStrip(daysPerMonth: [Int: Int]) -> some View {
         let maxDays = max(1, daysPerMonth.values.max() ?? 1)
         return HStack(alignment: .bottom, spacing: 6) {
             ForEach(1...12, id: \.self) { m in
@@ -916,6 +902,7 @@ private struct CityStintRow: View {
         .padding(.vertical, 11)
         .task(id: stint.id) {
             let result = await StintPhotoFetcher.shared.stintPhotoItem(for: stint)
+            guard !Task.isCancelled else { return }
             photoItem = result.item
             photoCount = result.count
         }

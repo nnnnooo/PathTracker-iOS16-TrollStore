@@ -27,6 +27,9 @@ struct Waytrace16App: App {
                 .environmentObject(chinaStore)
                 .onAppear {
                     tagger.enqueue()
+                    Task {
+                        await PhotoFootprints.importNewPhotosIfEnabled(into: store, tagger: tagger)
+                    }
                 }
         }
         .onChange(of: scenePhase) { phase in
@@ -34,6 +37,9 @@ struct Waytrace16App: App {
             case .active:
                 engine.refreshState()
                 tagger.enqueue()
+                Task {
+                    await PhotoFootprints.importNewPhotosIfEnabled(into: store, tagger: tagger)
+                }
             case .background:
                 engine.persistNow()
             default:

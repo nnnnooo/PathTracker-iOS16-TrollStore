@@ -128,8 +128,8 @@ enum ChinaGeoLoader {
         }
         lock.unlock()
 
-        // detailTolerance = 0 preserves raw GeoJSON shared vertices so zoomed-in adjacent borders never cross or gap
-        let features = parseGeoJSON(named: "100000_full", level: .province, detailTolerance: 0, coarseTolerance: 0.025)
+        // 轻度抽稀（约 150m 精度）：放大肉眼无损且顶点数减少 8-10 倍，杜绝发热卡顿
+        let features = parseGeoJSON(named: "100000_full", level: .province, detailTolerance: 0.0018, coarseTolerance: 0.018)
         lock.lock()
         provinceCache = features
         lock.unlock()
@@ -145,7 +145,7 @@ enum ChinaGeoLoader {
         lock.unlock()
 
         // 1. Parse prefecture-level cities and exclude sub-districts of the 4 direct-controlled municipalities
-        let rawCities = parseGeoJSON(named: "100000_full_city", level: .city, detailTolerance: 0, coarseTolerance: 0.014)
+        let rawCities = parseGeoJSON(named: "100000_full_city", level: .city, detailTolerance: 0.0012, coarseTolerance: 0.012)
         var filtered = rawCities.filter { feat in
             let provincePrefix = (feat.adcode / 10000) * 10000
             if municipalityAdcodes.contains(provincePrefix) || municipalityAdcodes.contains(feat.adcode) {
@@ -158,7 +158,7 @@ enum ChinaGeoLoader {
         }
 
         // 2. Append the 4 whole municipalities (北京市/天津市/上海市/重庆市) from province GeoJSON as single city-level areas
-        let wholeMunicipalities = parseGeoJSON(named: "100000_full", level: .city, detailTolerance: 0, coarseTolerance: 0.014)
+        let wholeMunicipalities = parseGeoJSON(named: "100000_full", level: .city, detailTolerance: 0.0012, coarseTolerance: 0.012)
             .filter { municipalityAdcodes.contains($0.adcode) }
         filtered.append(contentsOf: wholeMunicipalities)
 
@@ -180,7 +180,7 @@ enum ChinaGeoLoader {
         all.reserveCapacity(2900)
         for code in allProvinceAdcodes {
             let fileName = municipalityAdcodes.contains(code) ? "\(code)_full" : "\(code)_full_district"
-            let parsed = parseGeoJSON(named: fileName, level: .district, detailTolerance: 0, coarseTolerance: 0.008)
+            let parsed = parseGeoJSON(named: fileName, level: .district, detailTolerance: 0.0008, coarseTolerance: 0.007)
             all.append(contentsOf: parsed)
         }
         lock.lock()
@@ -578,6 +578,86 @@ final class ChinaRegionsStore: ObservableObject {
         hasUnsyncedChanges = true
         persistLocal()
         return nowLit
+    }
+
+    // MARK: - Direct Add / Remove by 4-Tab Region Manager
+
+    enum ManageTab: String, CaseIterable, Identifiable {
+        case district = "district"
+        case city = "city"
+        case province = "province"
+        case municipality = "municipalities"
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .district: return "区县"
+            case .city: return "城市"
+            case .province: return "省份"
+            case .municipality: return "直辖市"
+            }
+        }
+
+        var placeholder: String {
+            switch self {
+            case .district: return "区县名（如：西湖区）"
+            case .city: return "城市名（如：杭州市）"
+            case .province: return "省份名（如：浙江省）"
+            case .municipality: return "直辖市名（如：北京市）"
+            }
+        }
+    }
+
+    func items(for tab: ManageTab) -> [String] {
+        let raw: Set<String>
+        switch tab {
+        case .district: raw = visitedDistricts
+        case .city: raw = visitedCities
+        case .province: raw = visitedProvinces
+        case .municipality: raw = visitedMunicipalities
+        }
+        return raw.sorted { $0.localizedCompare($1) == .orderedAscending }
+    }
+
+    func addItem(_ rawKey: String, to tab: ManageTab) {
+        let key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        switch tab {
+        case .district:
+            visitedDistricts.insert(key)
+            manuallyRemoved.remove("d:\(key)")
+        case .city:
+            visitedCities.insert(key)
+            manuallyRemoved.remove("c:\(key)")
+        case .province:
+            visitedProvinces.insert(key)
+            manuallyRemoved.remove("p:\(key)")
+        case .municipality:
+            visitedMunicipalities.insert(key)
+            manuallyRemoved.remove("m:\(key)")
+        }
+        hasUnsyncedChanges = true
+        persistLocal()
+    }
+
+    func removeItem(_ key: String, from tab: ManageTab) {
+        switch tab {
+        case .district:
+            visitedDistricts.remove(key)
+            manuallyRemoved.insert("d:\(key)")
+        case .city:
+            visitedCities.remove(key)
+            manuallyRemoved.insert("c:\(key)")
+        case .province:
+            visitedProvinces.remove(key)
+            manuallyRemoved.insert("p:\(key)")
+        case .municipality:
+            visitedMunicipalities.remove(key)
+            manuallyRemoved.insert("m:\(key)")
+        }
+        hasUnsyncedChanges = true
+        persistLocal()
     }
 
     // MARK: - Auto-Match from DataStore Stays (WGS-84 -> GCJ-02 -> Point-in-Polygon)

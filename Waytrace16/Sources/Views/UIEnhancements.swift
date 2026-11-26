@@ -9,6 +9,7 @@ struct GPSSignalBadge: View {
     var showAccuracyText: Bool = false
 
     @State private var showPopover = false
+    @State private var showHelp = false
 
     private var accuracy: Double? {
         guard let acc = location?.horizontalAccuracy, acc > 0 else { return nil }
@@ -25,7 +26,7 @@ struct GPSSignalBadge: View {
 
     private var barColor: Color {
         switch level {
-        case 4: return Color(red: 0.30, green: 0.85, blue: 0.24) // 世界迷雾亮绿
+        case 4: return Color(red: 0.30, green: 0.85, blue: 0.24)
         case 3: return Color(red: 0.56, green: 0.82, blue: 0.20)
         case 2: return .orange
         case 1: return .red
@@ -46,6 +47,7 @@ struct GPSSignalBadge: View {
     var body: some View {
         Button {
             UISelectionFeedbackGenerator().selectionChanged()
+            showHelp = false
             showPopover = true
         } label: {
             HStack(spacing: 5) {
@@ -74,12 +76,13 @@ struct GPSSignalBadge: View {
         }
         .buttonStyle(.plain)
         .background(
-            AlwaysPopoverAnchor(isPresented: $showPopover) {
+            AlwaysPopoverAnchor(isPresented: $showPopover, layoutTrigger: showHelp) {
                 GPSSignalPopoverContent(
                     location: location,
                     level: level,
                     barColor: barColor,
-                    statusTitle: statusTitle
+                    statusTitle: statusTitle,
+                    showHelp: $showHelp
                 )
             }
         )
@@ -92,8 +95,8 @@ private struct GPSSignalPopoverContent: View {
     let level: Int
     let barColor: Color
     let statusTitle: String
+    @Binding var showHelp: Bool
 
-    @State private var showHelp = false
     @State private var copied = false
 
     private var accuracyMetersText: String {
@@ -114,52 +117,48 @@ private struct GPSSignalPopoverContent: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 16) {
-                // Left column: 精度 / 大数字 / 米
-                VStack(spacing: 3) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 12) {
+                VStack(spacing: 1) {
                     Text("精度")
-                        .font(.caption.weight(.medium))
+                        .font(.system(size: 11, weight: .medium))
                         .foregroundColor(.secondary)
                     Text(accuracyMetersText)
-                        .font(.system(size: 32, weight: .bold, design: .rounded))
+                        .font(.system(size: 24, weight: .bold, design: .rounded))
                         .monospacedDigit()
                         .foregroundColor(.primary)
                         .lineLimit(1)
-                        .minimumScaleFactor(0.7)
+                        .minimumScaleFactor(0.75)
                     Text("米")
-                        .font(.caption)
+                        .font(.system(size: 11))
                         .foregroundColor(.secondary)
                 }
-                .frame(minWidth: 52)
+                .frame(minWidth: 44)
 
                 Divider()
-                    .frame(height: 68)
+                    .frame(height: 54)
 
-                // Right column: 信号极佳标签 + ? + 坐标 + 时间
-                VStack(alignment: .leading, spacing: 8) {
-                    HStack {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 6) {
                         Text(statusTitle)
-                            .font(.subheadline.weight(.semibold))
+                            .font(.system(size: 12, weight: .semibold))
                             .foregroundColor(.white)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 4)
-                            .background(barColor, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        Spacer(minLength: 8)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(barColor, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        Spacer(minLength: 4)
                         Button {
                             UISelectionFeedbackGenerator().selectionChanged()
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showHelp.toggle()
-                            }
+                            showHelp.toggle()
                         } label: {
                             Image(systemName: "questionmark.circle")
-                                .font(.title3)
+                                .font(.system(size: 15))
                                 .foregroundColor(.blue)
                         }
                         .buttonStyle(.plain)
                     }
 
-                    VStack(alignment: .leading, spacing: 5) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Button {
                             guard location != nil else { return }
                             UIPasteboard.general.string = coordText
@@ -170,24 +169,24 @@ private struct GPSSignalPopoverContent: View {
                                 await MainActor.run { withAnimation { copied = false } }
                             }
                         } label: {
-                            HStack(spacing: 6) {
+                            HStack(spacing: 5) {
                                 Image(systemName: "location.north.fill")
-                                    .font(.caption)
+                                    .font(.system(size: 10))
                                     .foregroundColor(.primary)
                                 Text(copied ? "已复制坐标" : coordText)
-                                    .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                    .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                                     .foregroundColor(copied ? .green : .primary)
                                     .lineLimit(1)
                             }
                         }
                         .buttonStyle(.plain)
 
-                        HStack(spacing: 6) {
+                        HStack(spacing: 5) {
                             Image(systemName: "clock.fill")
-                                .font(.caption)
+                                .font(.system(size: 10))
                                 .foregroundColor(.primary)
                             Text(timeText)
-                                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                                .font(.system(size: 11.5, weight: .medium, design: .monospaced))
                                 .foregroundColor(.primary)
                                 .lineLimit(1)
                         }
@@ -197,20 +196,21 @@ private struct GPSSignalPopoverContent: View {
 
             if showHelp {
                 Text("精度表示 GPS 水平误差半径（米）。≤15 米为极佳，≤35 米为良好，≤80 米为一般；室内或省电模式下数值可能偏大。")
-                    .font(.caption2)
+                    .font(.system(size: 11))
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .frame(width: 292)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .frame(width: 260)
     }
 }
 
 /// Presents a true floating popover bubble (with arrow) on iPhone on iOS 16+.
 private struct AlwaysPopoverAnchor<PopoverContent: View>: UIViewRepresentable {
     @Binding var isPresented: Bool
+    var layoutTrigger: Bool = false
     let content: () -> PopoverContent
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -230,8 +230,8 @@ private struct AlwaysPopoverAnchor<PopoverContent: View>: UIViewRepresentable {
                 let host = UIHostingController(rootView: content())
                 host.modalPresentationStyle = .popover
                 host.view.backgroundColor = .clear
-                let targetSize = host.sizeThatFits(in: CGSize(width: 300, height: 220))
-                host.preferredContentSize = targetSize
+                let targetSize = host.sizeThatFits(in: CGSize(width: 260, height: 320))
+                host.preferredContentSize = CGSize(width: max(targetSize.width, 260), height: targetSize.height + 6)
 
                 if let pop = host.popoverPresentationController {
                     pop.sourceView = uiView
@@ -243,7 +243,8 @@ private struct AlwaysPopoverAnchor<PopoverContent: View>: UIViewRepresentable {
                 presenter.present(host, animated: true)
             } else if let host = context.coordinator.presentedVC {
                 host.rootView = content()
-                host.preferredContentSize = host.sizeThatFits(in: CGSize(width: 300, height: 220))
+                let targetSize = host.sizeThatFits(in: CGSize(width: 260, height: 320))
+                host.preferredContentSize = CGSize(width: max(targetSize.width, 260), height: targetSize.height + 6)
             }
         } else if let host = context.coordinator.presentedVC {
             context.coordinator.presentedVC = nil
@@ -286,19 +287,32 @@ private extension UIView {
 struct OnThisDayMemoryCard: View {
     let memory: MemoriesEngine.OnThisDayMemory
     @State private var photoItem: PhotoPreviewItem?
+    @State private var didLoadPhoto = false
 
     var body: some View {
         HStack(spacing: 11) {
-            if let item = photoItem {
-                Image(uiImage: item.thumbnail)
-                    .resizable()
-                    .scaledToFill()
-                    .frame(width: 54, height: 54)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                    .onTapGesture {
-                        PhotoLightboxPresenter.present(items: [item])
+            ZStack {
+                if let item = photoItem {
+                    Image(uiImage: item.thumbnail)
+                        .resizable()
+                        .scaledToFill()
+                        .onTapGesture {
+                            PhotoLightboxPresenter.present(items: [item])
+                        }
+                } else {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color(.tertiarySystemFill))
+                    if didLoadPhoto {
+                        PlaceIcon(category: memory.stay.category, isLandmark: memory.stay.isLandmark, size: 26)
+                    } else {
+                        Image(systemName: "photo")
+                            .font(.subheadline)
+                            .foregroundColor(Color(.tertiaryLabel))
                     }
+                }
             }
+            .frame(width: 54, height: 54)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
                 Text("\(memory.year) 年（\(memory.yearsAgo) 年前）")
@@ -323,6 +337,7 @@ struct OnThisDayMemoryCard: View {
                 around: memory.stay.arrival,
                 caption: "\(memory.year)年 · \(memory.stay.displayName)"
             )
+            didLoadPhoto = true
         }
     }
 }

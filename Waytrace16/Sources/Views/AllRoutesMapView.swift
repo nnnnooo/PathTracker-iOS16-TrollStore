@@ -124,8 +124,14 @@ struct AllRoutesMapScreen: View {
     @State private var span: RouteSpan = .all
     @State private var kind: RouteKind = .all
     @State private var allLines: [AtlasLine] = []
-    @State private var shown: [AtlasLine] = []
     @State private var isLoaded = false
+
+    private var shown: [AtlasLine] {
+        let interval = span.interval()
+        return everything.filter { line in
+            kind.includes(line.mode) && (interval.map { line.start >= $0.start && line.start < $0.end } ?? true)
+        }
+    }
 
     private var liveLine: AtlasLine? {
         let pts = engine.pendingPoints
@@ -253,9 +259,6 @@ struct AllRoutesMapScreen: View {
         .task(id: store.chunks.count) {
             await buildAtlasLines()
         }
-        .onChange(of: span) { _ in updateShown() }
-        .onChange(of: kind) { _ in updateShown() }
-        .onChange(of: engine.pendingPoints.count / 20) { _ in updateShown() }
     }
 
     private var topHeader: some View {
@@ -404,20 +407,26 @@ struct AllRoutesMapScreen: View {
                     }()
                     HStack(spacing: 3) {
                         if let pickedYear {
-                            Text(String(pickedYear)).monospacedDigit()
+                            Text(String(pickedYear))
+                                .monospacedDigit()
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
                         }
                         Image(systemName: pickedYear == nil ? "calendar" : "chevron.up.chevron.down")
                             .font(pickedYear == nil ? .subheadline.weight(.semibold) : .caption2.weight(.bold))
                     }
                     .font(.subheadline.weight(.semibold))
                     .foregroundColor(pickedYear == nil ? .white : .black)
-                    .padding(.horizontal, 12)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 11)
                     .padding(.vertical, 9)
                     .background {
                         if pickedYear != nil { Capsule().fill(goldTint) }
                     }
                     .contentShape(Capsule())
                 }
+                .layoutPriority(2)
             }
         }
         .padding(4)
@@ -473,14 +482,6 @@ struct AllRoutesMapScreen: View {
         }.value
         allLines = built
         isLoaded = true
-        updateShown()
-    }
-
-    private func updateShown() {
-        let interval = span.interval()
-        shown = everything.filter { line in
-            kind.includes(line.mode) && (interval.map { line.start >= $0.start && line.start < $0.end } ?? true)
-        }
     }
 }
 

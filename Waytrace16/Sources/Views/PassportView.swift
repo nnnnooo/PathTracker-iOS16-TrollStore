@@ -550,11 +550,14 @@ private struct PassportBookSection: View {
         }
 
         let bookKey = "\(theme.rawValue)-\(summary.passportStamps.count)-\(summary.cityStamps.count)"
+        let bookWidth: CGFloat = min(UIScreen.main.bounds.width - 80, 272)
+        let bookHeight: CGFloat = (bookWidth / 0.70).rounded()
+
+        let bookSize = CGSize(width: bookWidth, height: bookHeight)
 
         return VStack(spacing: 12) {
-            PageCurlContainer(pages: pages, current: $page)
-                .aspectRatio(0.70, contentMode: .fit)
-                .frame(maxWidth: 272)
+            PageCurlContainer(pages: pages, bookSize: bookSize, current: $page)
+                .frame(width: bookWidth, height: bookHeight)
                 .shadow(color: .black.opacity(0.10), radius: 3, y: 2)
                 .shadow(color: .black.opacity(0.16), radius: 18, y: 12)
                 .id(bookKey)
@@ -822,6 +825,7 @@ private struct PassportStampPage: View {
 
 private struct PageCurlContainer: UIViewControllerRepresentable {
     let pages: [AnyView]
+    let bookSize: CGSize
     @Binding var current: Int
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -836,6 +840,7 @@ private struct PageCurlContainer: UIViewControllerRepresentable {
         controller.delegate = context.coordinator
         controller.isDoubleSided = false
         controller.view.backgroundColor = .clear
+        controller.view.insetsLayoutMarginsFromSafeArea = false
         let initial = min(max(0, current), max(0, pages.count - 1))
         controller.setViewControllers([context.coordinator.page(initial)], direction: .forward, animated: false)
         return controller
@@ -845,8 +850,47 @@ private struct PageCurlContainer: UIViewControllerRepresentable {
         context.coordinator.parent = self
     }
 
-    final class Page: UIHostingController<AnyView> {
-        var index = 0
+    /// 普通 UIViewController 包装层：阻断滚动到导航栏下方时 UIPageViewController 向下传递 safeAreaInsets 导致内页被压扁下移
+    final class Page: UIViewController {
+        let index: Int
+        private let host: UIHostingController<AnyView>
+        private let fixedSize: CGSize
+
+        init(index: Int, content: AnyView, fixedSize: CGSize) {
+            self.index = index
+            self.fixedSize = fixedSize
+            let wrapped = AnyView(
+                content
+                    .frame(width: fixedSize.width, height: fixedSize.height)
+                    .ignoresSafeArea(.all)
+            )
+            let hc = UIHostingController(rootView: wrapped)
+            hc.sizingOptions = []
+            hc.view.backgroundColor = .clear
+            hc.view.insetsLayoutMarginsFromSafeArea = false
+            self.host = hc
+            super.init(nibName: nil, bundle: nil)
+        }
+
+        required init?(coder: NSCoder) { fatalError() }
+
+        override func viewDidLoad() {
+            super.viewDidLoad()
+            view.backgroundColor = .clear
+            view.insetsLayoutMarginsFromSafeArea = false
+            view.clipsToBounds = false
+            // 不作为 child VC 加入，彻底隔断 UIKit safeAreaInsets 传递到 UIHostingController
+            host.view.frame = CGRect(origin: .zero, size: fixedSize)
+            view.addSubview(host.view)
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            let target = CGRect(origin: .zero, size: fixedSize)
+            if host.view.frame != target {
+                host.view.frame = target
+            }
+        }
     }
 
     final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
@@ -859,9 +903,7 @@ private struct PageCurlContainer: UIViewControllerRepresentable {
 
         func page(_ index: Int) -> Page {
             if let existing = made[index] { return existing }
-            let vc = Page(rootView: parent.pages[index])
-            vc.index = index
-            vc.view.backgroundColor = .clear
+            let vc = Page(index: index, content: parent.pages[index], fixedSize: parent.bookSize)
             made = made.filter { abs($0.key - index) <= 3 }
             made[index] = vc
             return vc

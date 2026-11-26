@@ -35,7 +35,7 @@ struct RootTabView: View {
 
             TripsView(showingSettings: $showingSettings)
                 .tabItem {
-                    Label("旅程", systemImage: "suitcase.rolling.fill")
+                    Label("旅程", systemImage: "suitcase.fill")
                 }
                 .tag(RootTab.trips)
 

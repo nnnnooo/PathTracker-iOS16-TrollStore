@@ -37,7 +37,7 @@ final class PlaceTagger: ObservableObject {
 
     func retryFailed() {
         let failed = store.stays.filter {
-            $0.tagState == .failed || $0.countryCode == nil || ($0.city == nil && $0.placeName == nil)
+            $0.tagState == .failed || ($0.customName == nil && ($0.countryCode == nil || ($0.city == nil && $0.placeName == nil)))
         }.map { stay -> Stay in
             var copy = stay
             copy.tagState = .pending

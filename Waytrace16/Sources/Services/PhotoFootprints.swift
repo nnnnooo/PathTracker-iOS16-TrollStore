@@ -160,7 +160,82 @@ enum PhotoFootprints {
             )
         }
         store.insertStaysBatch(newStays)
+        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: lastAutoImportKey)
         return Summary(scanned: found.0, withLocation: found.1, visits: newStays.count, skippedAlreadyRecorded: found.3)
+    }
+
+    static let autoImportEnabledKey = "wt16.photos.autoImport"
+    private static let lastAutoImportKey = "wt16.photos.lastAutoImportTS"
+    private static var lastCheckDate: Date = .distantPast
+    private static var isAutoImporting = false
+
+    /// 增量导入自上次检查以来新增的照片足迹（仅查询 creationDate >= since 的元数据，耗时毫秒级、几乎零耗电）
+    @MainActor
+    static func importNewPhotosIfEnabled(into store: DataStore, tagger: PlaceTagger, force: Bool = false) async {
+        guard UserDefaults.standard.bool(forKey: autoImportEnabledKey) else { return }
+        let auth = authorization
+        guard auth == .authorized || auth == .limited else { return }
+        guard !isAutoImporting else { return }
+        let now = Date()
+        if !force, now.timeIntervalSince(lastCheckDate) < 300 { return }
+
+        isAutoImporting = true
+        lastCheckDate = now
+        defer { isAutoImporting = false }
+
+        let storedTS = UserDefaults.standard.double(forKey: lastAutoImportKey)
+        // 首次开启默认只回溯最近 24 小时的新增照片，避免全量扫库卡顿；之后带 5 分钟重叠窗口防边界漏扫
+        let since = storedTS > 0
+            ? Date(timeIntervalSince1970: storedTS - 300)
+            : now.addingTimeInterval(-86_400)
+
+        let snapshot = store.stays.map {
+            (Known(arrival: $0.arrival, departure: max($0.departure ?? Date(), $0.arrival),
+                   latitude: $0.latitude, longitude: $0.longitude), $0.isFromPhotos)
+        }
+        let recorded = snapshot.filter { !$0.1 }.map(\.0)
+        let imported = snapshot.filter(\.1).map(\.0) + DeletedPhotoVisits.all
+
+        let freshVisits = await Task.detached(priority: .utility) { () -> [Visit] in
+            let options = PHFetchOptions()
+            options.predicate = NSPredicate(
+                format: "(mediaType == %d OR mediaType == %d) AND creationDate >= %@",
+                PHAssetMediaType.image.rawValue,
+                PHAssetMediaType.video.rawValue,
+                since as NSDate
+            )
+            options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+            let assets = PHAsset.fetchAssets(with: options)
+            guard assets.count > 0 else { return [] }
+            var shots: [Shot] = []
+            shots.reserveCapacity(assets.count)
+            for idx in 0..<assets.count {
+                let asset = assets.object(at: idx)
+                if let location = asset.location, let date = asset.creationDate,
+                   CLLocationCoordinate2DIsValid(location.coordinate),
+                   location.coordinate.latitude != 0 || location.coordinate.longitude != 0 {
+                    shots.append(Shot(date: date, latitude: location.coordinate.latitude, longitude: location.coordinate.longitude))
+                }
+            }
+            guard !shots.isEmpty else { return [] }
+            let grouped = visits(from: shots)
+            return newVisits(grouped, recorded: recorded, imported: imported).new
+        }.value
+
+        UserDefaults.standard.set(now.timeIntervalSince1970, forKey: lastAutoImportKey)
+        guard !freshVisits.isEmpty else { return }
+
+        let newStays = freshVisits.map { visit in
+            Stay(
+                arrival: visit.start,
+                departure: max(visit.end, visit.start.addingTimeInterval(60)),
+                coordinate: visit.coordinate,
+                sampleCount: visit.shots,
+                sourceRaw: source
+            )
+        }
+        store.insertStaysBatch(newStays)
+        tagger.enqueue()
     }
 
     /// Merges same-day photo stays ONLY when they are physically within 2 km of each other,

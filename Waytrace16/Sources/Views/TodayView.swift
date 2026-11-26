@@ -1,5 +1,6 @@
 import SwiftUI
 import CoreLocation
+import CoreMotion
 
 struct TodayView: View {
     @Binding var showingSettings: Bool
@@ -15,6 +16,7 @@ struct TodayView: View {
     @State private var editingStay: Stay?
     @State private var editingChunk: TrackChunk?
     @State private var dayShareCardURL: URL?
+    @State private var daySteps: Int?
 
     private var isToday: Bool { Calendar.current.isDateInToday(selectedDate) }
     private var dayChunks: [TrackChunk] { store.chunks(on: selectedDate) }
@@ -50,6 +52,7 @@ struct TodayView: View {
                     }
                 }
                 .padding(.horizontal)
+                .padding(.top, 10)
                 .padding(.bottom, isToday ? 24 : 76)
             }
             .scrollIndicators(.hidden)
@@ -177,7 +180,32 @@ struct TodayView: View {
             .sheet(item: $editingStay) { stay in StayDetailSheet(stay: stay) }
             .sheet(item: $editingChunk) { chunk in MoveDetailSheet(chunk: chunk) }
             .onChange(of: selectedDate) { _ in dayShareCardURL = nil }
+            .task(id: Calendar.current.startOfDay(for: selectedDate)) {
+                await loadSteps(for: selectedDate)
+            }
         }
+    }
+
+    private func loadSteps(for date: Date) async {
+        guard CMPedometer.isStepCountingAvailable() else {
+            daySteps = nil
+            return
+        }
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: date)
+        let now = Date()
+        let end = cal.isDateInToday(date) ? now : (cal.date(byAdding: .day, value: 1, to: start) ?? start.addingTimeInterval(86_400))
+        guard now.timeIntervalSince(start) <= 7.5 * 86_400 else {
+            daySteps = nil
+            return
+        }
+        let pedometer = CMPedometer()
+        let steps: Int? = await withCheckedContinuation { cont in
+            pedometer.queryPedometerData(from: start, to: end) { data, _ in
+                cont.resume(returning: data?.numberOfSteps.intValue)
+            }
+        }
+        daySteps = steps
     }
 
     private func shift(by days: Int) {
@@ -419,11 +447,19 @@ struct TodayView: View {
 
     private var metricsBar: some View {
         HStack(spacing: 0) {
-            dayFigure(value: Formatters.distance(dayDistance), label: "移动", symbol: "point.topleft.down.curvedto.point.bottomright.up", tint: .blue)
-            Divider().frame(height: 34)
-            dayFigure(value: "\(dayStays.count)", label: "个地点", symbol: "mappin.and.ellipse", tint: .pink)
-            Divider().frame(height: 34)
-            dayFigure(value: "\(dayChunks.count)", label: "段行程", symbol: "figure.walk", tint: .green)
+            if let steps = daySteps {
+                dayFigure(value: NumberFormatter.localizedString(from: NSNumber(value: steps), number: .decimal), label: "步", symbol: "shoeprints.fill", tint: .orange)
+                Divider().frame(height: 34)
+                dayFigure(value: Formatters.distance(dayDistance), label: "移动", symbol: "figure.walk", tint: .green)
+                Divider().frame(height: 34)
+                dayFigure(value: "\(dayStays.count)", label: "个地点", symbol: "mappin.and.ellipse", tint: .pink)
+            } else {
+                dayFigure(value: Formatters.distance(dayDistance), label: "移动", symbol: "point.topleft.down.curvedto.point.bottomright.up", tint: .blue)
+                Divider().frame(height: 34)
+                dayFigure(value: "\(dayStays.count)", label: "个地点", symbol: "mappin.and.ellipse", tint: .pink)
+                Divider().frame(height: 34)
+                dayFigure(value: "\(dayChunks.count)", label: "段行程", symbol: "figure.walk", tint: .green)
+            }
         }
         .padding(.vertical, 12)
         .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 22, style: .continuous))
@@ -873,53 +909,242 @@ private struct MoveDetailSheet: View {
     let chunk: TrackChunk
     @State private var selectedMode: MovementMode
     @State private var showDeleteConfirm = false
+    @State private var mapResetToken = 0
 
     init(chunk: TrackChunk) {
         self.chunk = chunk
         _selectedMode = State(initialValue: chunk.mode)
     }
 
+    private var previewChunk: TrackChunk {
+        var copy = chunk
+        copy.modeRaw = selectedMode.rawValue
+        return copy
+    }
+
+    private var departurePlaceName: String {
+        let candidates = store.stays(on: chunk.startDate)
+        let prev = candidates
+            .filter { ($0.departure ?? $0.arrival) <= chunk.startDate.addingTimeInterval(600) }
+            .min { abs(($0.departure ?? $0.arrival).timeIntervalSince(chunk.startDate)) < abs(($1.departure ?? $1.arrival).timeIntervalSince(chunk.startDate)) }
+        if let prev, abs((prev.departure ?? prev.arrival).timeIntervalSince(chunk.startDate)) <= 1800 {
+            return prev.displayName
+        }
+        return "出发"
+    }
+
+    private var arrivalPlaceName: String {
+        let candidates = store.stays(on: chunk.endDate)
+        let next = candidates
+            .filter { $0.arrival >= chunk.endDate.addingTimeInterval(-600) }
+            .min { abs($0.arrival.timeIntervalSince(chunk.endDate)) < abs($1.arrival.timeIntervalSince(chunk.endDate)) }
+        if let next, abs(next.arrival.timeIntervalSince(chunk.endDate)) <= 1800 {
+            return next.displayName
+        }
+        return "到达"
+    }
+
+    private var arrivalStay: Stay? {
+        let candidates = store.stays(on: chunk.endDate)
+        let next = candidates
+            .filter { $0.arrival >= chunk.endDate.addingTimeInterval(-600) }
+            .min { abs($0.arrival.timeIntervalSince(chunk.endDate)) < abs($1.arrival.timeIntervalSince(chunk.endDate)) }
+        if let next, abs(next.arrival.timeIntervalSince(chunk.endDate)) <= 1800 {
+            return next
+        }
+        return nil
+    }
+
+    private static func cnDistance(_ meters: Double) -> String {
+        if meters >= 1000 {
+            return String(format: "%.1f公里", meters / 1000)
+        }
+        return "\(Int(meters.rounded()))米"
+    }
+
+    private static func cnSpeed(_ metersPerSecond: Double) -> String {
+        String(format: "%.1f公里/时", max(0, metersPerSecond) * 3.6)
+    }
+
+    private static func cnDuration(_ seconds: TimeInterval) -> String {
+        let totalMinutes = max(1, Int(seconds / 60))
+        let days = totalMinutes / (24 * 60)
+        let hours = (totalMinutes % (24 * 60)) / 60
+        let minutes = totalMinutes % 60
+        if days > 0 {
+            return hours > 0 ? "\(days)天 \(hours)小时" : "\(days)天"
+        } else if hours > 0 {
+            return minutes > 0 ? "\(hours)小时\(minutes)分" : "\(hours)小时"
+        }
+        return "\(minutes)分钟"
+    }
+
     var body: some View {
         NavigationStack {
-            Form {
-                Section {
-                    DayRouteMapView(chunks: [chunk], pendingPoints: [], stays: [], currentLocation: nil)
-                        .frame(height: 200)
-                        .listRowInsets(EdgeInsets())
-                }
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    // 1. 圆角路线地图卡片 + 右上角复位按钮
+                    ZStack(alignment: .topTrailing) {
+                        DayRouteMapView(
+                            chunks: [previewChunk],
+                            pendingPoints: [],
+                            stays: arrivalStay.map { [$0] } ?? [],
+                            currentLocation: nil
+                        )
+                        .id("\(selectedMode.rawValue)-\(mapResetToken)")
+                        .frame(height: 245)
+                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
 
-                Section("路段数据") {
-                    LabeledContent("起止时间", value: "\(Formatters.timeHM(chunk.startDate)) – \(Formatters.timeHM(chunk.endDate))")
-                    LabeledContent("距离", value: Formatters.distance(chunk.distance))
-                    LabeledContent("用时", value: Formatters.duration(chunk.duration))
-                    LabeledContent("平均速度", value: Formatters.speed(chunk.averageSpeed))
-                    LabeledContent("最高速度", value: Formatters.speed(max(chunk.maxSpeed, chunk.averageSpeed)))
-                }
-
-                Section("出行方式") {
-                    Picker("修改方式", selection: $selectedMode) {
-                        ForEach(MovementMode.allCases, id: \.self) { m in
-                            Label(m.title, systemImage: m.symbol).tag(m)
+                        Button {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            mapResetToken &+= 1
+                        } label: {
+                            Image(systemName: "location")
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundColor(.primary)
+                                .frame(width: 38, height: 38)
+                                .background(.ultraThinMaterial, in: Circle())
+                                .shadow(color: .black.opacity(0.08), radius: 4, y: 2)
                         }
+                        .padding(12)
                     }
-                }
 
-                Section {
-                    Button("删除此段轨迹（清理 GPS 漂移）", role: .destructive) {
-                        showDeleteConfirm = true
+                    // 2. 起止地点时间轴卡片
+                    HStack(alignment: .top, spacing: 12) {
+                        VStack(spacing: 4) {
+                            Circle()
+                                .fill(Color.green)
+                                .frame(width: 8, height: 8)
+                                .padding(.top, 6)
+                            Rectangle()
+                                .fill(Color(.separator))
+                                .frame(width: 1.5, height: 28)
+                            Circle()
+                                .fill(Color.red)
+                                .frame(width: 8, height: 8)
+                        }
+
+                        VStack(alignment: .leading, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(departurePlaceName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text(Formatters.timeHM(chunk.startDate))
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(arrivalPlaceName)
+                                    .font(.headline)
+                                    .foregroundColor(.primary)
+                                Text(Formatters.timeHM(chunk.endDate))
+                                    .font(.subheadline.monospacedDigit())
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        Spacer()
+                    }
+                    .padding(16)
+                    .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                    // 3. 数据卡片
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("数据")
+                            .font(.footnote.weight(.medium))
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 12)
+
+                        VStack(spacing: 0) {
+                            metricRow("距离", Self.cnDistance(chunk.distance))
+                            Divider().padding(.leading, 16)
+                            metricRow("用时", Self.cnDuration(chunk.duration))
+                            Divider().padding(.leading, 16)
+                            metricRow("平均速度", Self.cnSpeed(chunk.averageSpeed))
+                            Divider().padding(.leading, 16)
+                            metricRow("最高速度", Self.cnSpeed(chunk.maxSpeed))
+                        }
+                        .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                    }
+
+                    // 4. 出行方式卡片（带图标跳转二级页）
+                    VStack(alignment: .leading, spacing: 6) {
+                        NavigationLink {
+                            MovementModePickerView(selectedMode: $selectedMode)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Text("出行方式")
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                Spacer()
+                                Image(systemName: selectedMode.symbol)
+                                    .font(.body.weight(.semibold))
+                                    .foregroundColor(.blue)
+                                Text(selectedMode.title)
+                                    .font(.body)
+                                    .foregroundColor(.primary)
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundColor(Color(.tertiaryLabel))
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+
+                        Text("如果识别错了，可以在这里改正。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 12)
+                    }
+
+                    // 5. 删除这段轨迹卡片
+                    VStack(alignment: .leading, spacing: 6) {
+                        Button {
+                            showDeleteConfirm = true
+                        } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "trash")
+                                    .font(.body)
+                                    .foregroundColor(.blue)
+                                Text("删除这段轨迹")
+                                    .font(.body)
+                                    .foregroundColor(.red)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+                        }
+                        .buttonStyle(.plain)
+
+                        Text("适合删除 GPS 漂移产生的乱线。停留记录不受影响。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .padding(.leading, 12)
                     }
                 }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 28)
             }
-            .navigationTitle("路线详情")
+            .background(Color(.systemGroupedBackground))
+            .navigationTitle("\(selectedMode.title) · \(Self.cnDistance(chunk.distance))")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        store.updateChunkMode(id: chunk.id, mode: selectedMode)
+                ToolbarItem(placement: .navigationBarTrailing) {
+                    Button {
+                        if selectedMode != chunk.mode {
+                            store.updateChunkMode(id: chunk.id, mode: selectedMode)
+                        }
                         dismiss()
+                    } label: {
+                        Image(systemName: "checkmark")
+                            .font(.subheadline.weight(.bold))
+                            .foregroundColor(.white)
+                            .frame(width: 32, height: 32)
+                            .background(Color.blue, in: Circle())
                     }
                 }
             }
@@ -931,6 +1156,74 @@ private struct MoveDetailSheet: View {
                 Button("取消", role: .cancel) {}
             }
         }
+        .presentationDragIndicator(.visible)
+    }
+
+    private func metricRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.body)
+                .foregroundColor(.primary)
+            Spacer()
+            Text(value)
+                .font(.body.monospacedDigit())
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 13)
+    }
+}
+
+private struct MovementModePickerView: View {
+    @Binding var selectedMode: MovementMode
+    @Environment(\.dismiss) private var dismiss
+
+    private static let selectableModes: [MovementMode] = [
+        .walking, .running, .cycling, .automotive, .subway, .flying
+    ]
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                ForEach(Array(Self.selectableModes.enumerated()), id: \.element) { idx, mode in
+                    Button {
+                        UISelectionFeedbackGenerator().selectionChanged()
+                        selectedMode = mode
+                        dismiss()
+                    } label: {
+                        HStack(spacing: 14) {
+                            Image(systemName: mode.symbol)
+                                .font(.title3)
+                                .foregroundColor(.blue)
+                                .frame(width: 28, alignment: .center)
+                            Text(mode.title)
+                                .font(.body)
+                                .foregroundColor(.primary)
+                            Spacer()
+                            if selectedMode == mode {
+                                Image(systemName: "checkmark")
+                                    .font(.body.weight(.semibold))
+                                    .foregroundColor(.blue)
+                            }
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 14)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if idx < Self.selectableModes.count - 1 {
+                        Divider().padding(.leading, 58)
+                    }
+                }
+            }
+            .background(Color(.secondarySystemGroupedBackground), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+            .padding(.horizontal, 16)
+            .padding(.top, 16)
+        }
+        .background(Color(.systemGroupedBackground))
+        .navigationTitle("出行方式")
+        .navigationBarTitleDisplayMode(.inline)
     }
 }
 

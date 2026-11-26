@@ -308,7 +308,8 @@ final class LocationEngine: ObservableObject {
     func refreshState() {
         validateActiveTrip()
         if pausedUntil != nil, !isPaused { resume() }
-        if isRecording, activity == .off || isSettled { start() }
+        // 处于静止休眠（isSettled）时保持地理围栏省电，不重新唤醒连续 GPS
+        if isRecording, activity == .off, !isSettled { start() }
     }
 
     func reloadAfterClear() {
@@ -411,8 +412,9 @@ final class LocationEngine: ObservableObject {
             }
             pendingPoints.append(TrackPoint(location))
         }
+        PendingTrackStore.save(pendingPoints)
         if let first = pendingPoints.first, pendingPoints.count >= 2,
-           pendingPoints.count >= 30 || Date().timeIntervalSince(first.timestamp) >= 30 * 60 {
+           pendingPoints.count >= 6 || Date().timeIntervalSince(first.timestamp) >= 5 * 60 {
             flushChunk(carryOver: true)
         }
     }
@@ -493,12 +495,13 @@ final class LocationEngine: ObservableObject {
 
         Task {
             let legs = await classifier.legs(of: points)
-            if legs.count > 1 {
+            let validLegs = legs.filter { $0.points.count >= 2 }
+            if validLegs.count > 1 {
                 store.deleteChunk(id: chunk.id)
-                for leg in legs where leg.points.count >= 2 {
+                for leg in validLegs {
                     store.insertChunk(TrackChunk(points: leg.points, mode: leg.mode, tripID: tripID))
                 }
-            } else if let leg = legs.first, leg.mode != initialMode {
+            } else if let leg = validLegs.first, leg.mode != initialMode {
                 var updated = chunk
                 updated.modeRaw = leg.mode.rawValue
                 store.insertChunk(updated)

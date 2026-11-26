@@ -289,6 +289,7 @@ struct WorldView: View {
                         .lineLimit(1)
                         .minimumScaleFactor(0.75)
 
+                    let cachedHasStamps = (cachedSummary.entryCount + cachedSummary.provinceCount + cachedSummary.passportCityCount) > 0
                     if let stamps = passportPreview?.latestStamps, !stamps.isEmpty {
                         ZStack(alignment: .leading) {
                             ForEach(Array(stamps.enumerated()), id: \.element.id) { index, stamp in
@@ -300,6 +301,11 @@ struct WorldView: View {
                         }
                         .frame(height: 46)
                         .padding(.top, 2)
+                    } else if !hasComputedOnce && cachedHasStamps {
+                        // 冷启动异步计算期间保留印章占位高度，避免闪现副标题文字后又消失
+                        Color.clear
+                            .frame(height: 46)
+                            .padding(.top, 2)
                     } else {
                         Text("出入境章 · 34 省朱砂印 · 城市章")
                             .font(.caption)

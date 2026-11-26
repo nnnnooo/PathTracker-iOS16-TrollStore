@@ -181,9 +181,11 @@ final class MotionClassifier {
         var low = 0, high = 0
         return points.indices.map { index in
             let time = points[index].timestamp
-            while points[low].timestamp < time.addingTimeInterval(-Tuning.window) { low += 1 }
+            while low + 1 < points.count, points[low].timestamp < time.addingTimeInterval(-Tuning.window) { low += 1 }
             while high + 1 < points.count, points[high + 1].timestamp <= time.addingTimeInterval(Tuning.window) { high += 1 }
-            let window = own[low...max(high, index)].sorted()
+            let lo = min(low, index)
+            let hi = max(high, index)
+            let window = own[lo...hi].sorted()
             return window[window.count / 2]
         }
     }

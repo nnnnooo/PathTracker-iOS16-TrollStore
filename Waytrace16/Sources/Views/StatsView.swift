@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import CoreMotion
 import UIKit
 
 /// 1:1 Original PathTracker (漫迹) Stats Page adapted for iOS 16.
@@ -19,6 +20,7 @@ struct StatsView: View {
     @State private var selectedMode: MovementMode?
     @State private var showAllRoutesMap = false
     @State private var showYearReport = false
+    @State private var weekRealDailySteps: Int?
 
     private struct StackedBarItem: Identifiable {
         let id: String
@@ -193,6 +195,26 @@ struct StatsView: View {
             .fullScreenCover(isPresented: $showYearReport) {
                 YearReportView()
             }
+            .task {
+                await loadWeekPedometerSteps()
+            }
+        }
+    }
+
+    private func loadWeekPedometerSteps() async {
+        guard CMPedometer.isStepCountingAvailable() else { return }
+        let cal = Calendar.current
+        let today = cal.startOfDay(for: Date())
+        guard let start = cal.date(byAdding: .day, value: -6, to: today) else { return }
+        let now = Date()
+        let pedometer = CMPedometer()
+        let total: Int? = await withCheckedContinuation { cont in
+            pedometer.queryPedometerData(from: start, to: now) { data, _ in
+                cont.resume(returning: data?.numberOfSteps.intValue)
+            }
+        }
+        if let total {
+            weekRealDailySteps = Int((Double(total) / 7.0).rounded())
         }
     }
 
@@ -278,16 +300,18 @@ struct StatsView: View {
         let walkMeters = periodGroundChunks.filter { $0.mode == .walking || $0.mode == .running }.reduce(0.0) { $0 + $1.distance }
         let daysInPeriod = period == .week ? 7 : (period == .month ? 30 : 365)
         let estimatedDailySteps = Int((walkMeters / 0.72 / Double(daysInPeriod)).rounded())
+        let useRealPedometer = (period == .week && weekRealDailySteps != nil)
+        let shownSteps = useRealPedometer ? (weekRealDailySteps ?? estimatedDailySteps) : estimatedDailySteps
 
         return VStack(alignment: .leading, spacing: 6) {
             Label("步数", systemImage: "figure.walk")
                 .font(.subheadline.weight(.semibold))
                 .foregroundColor(.orange)
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(Self.formattedInt(estimatedDailySteps))
+                Text(Self.formattedInt(shownSteps))
                     .font(.system(size: 32, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                Text("日均")
+                Text(useRealPedometer ? "日均" : "日均 · 按步行轨迹估算")
                     .font(.subheadline)
                     .foregroundColor(.secondary)
             }

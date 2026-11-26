@@ -39,8 +39,7 @@ struct DayRouteMapView: UIViewRepresentable {
     }
 
     func updateUIView(_ map: MKMapView, context: Context) {
-        let locKey = currentLocation.map { String(format: "%.3f,%.3f", $0.coordinate.latitude, $0.coordinate.longitude) } ?? "none"
-        let signature = "\(chunks.map(\.id.uuidString).joined())|\(pendingPoints.count)|\(stays.map(\.id.uuidString).joined())|\(locKey)"
+        let signature = "\(chunks.map(\.id.uuidString).joined())|\(pendingPoints.count)|\(stays.map(\.id.uuidString).joined())"
         guard context.coordinator.lastSignature != signature else { return }
         context.coordinator.lastSignature = signature
 
